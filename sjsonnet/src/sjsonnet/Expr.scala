@@ -176,6 +176,9 @@ object Expr {
   final case class Or(var pos: Position, lhs: Expr, rhs: Expr) extends Expr {
     final override private[sjsonnet] def tag = ExprTags.Or
   }
+  final case class NullCoal(var pos: Position, lhs: Expr, rhs: Expr) extends Expr {
+    final override private[sjsonnet] def tag = ExprTags.NullCoal
+  }
   final case class BinaryOp(var pos: Position, lhs: Expr, op: Int, rhs: Expr) extends Expr {
     final override private[sjsonnet] def tag = ExprTags.BinaryOp
     override def exprErrorString: String = s"${super.exprErrorString} ${BinaryOp.name(op)}"
@@ -200,6 +203,7 @@ object Expr {
     final val OP_| = 16
     final val OP_&& = 17
     final val OP_|| = 18
+    final val OP_?? = 70
     private val names = IntMap(
       OP_* -> "*",
       OP_/ -> "/",
@@ -219,7 +223,8 @@ object Expr {
       OP_^ -> "^",
       OP_| -> "|",
       OP_&& -> "&&",
-      OP_|| -> "||"
+      OP_|| -> "||",
+      OP_?? -> "??"
     )
     def name(op: Int): String = names.getOrElse(op, "<unknown>")
   }
@@ -522,6 +527,7 @@ private[sjsonnet] object ExprTags {
   final val ImportStr = 35
   final val ImportBin = 36
   final val Error = 37
+  final val NullCoal = 70
   // used in Evaluator#visitInvalid
   final val Id = 0
   final val Self = 1

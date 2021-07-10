@@ -657,6 +657,9 @@ object EvaluatorTests extends TestSuite {
         eval("1 || 2")
       )
       assert(ex2.getMessage.contains("Binary operator || does not operate on numbers."))
+
+      eval("'foo' ?? null") ==> ujson.Str("foo")
+      eval("null ?? 'bar'") ==> ujson.Str("bar")
     }
     test("stdToString") {
       eval("""std.toString({k: "v"})""") ==> ujson.Str(

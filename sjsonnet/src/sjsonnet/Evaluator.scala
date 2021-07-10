@@ -98,6 +98,7 @@ class Evaluator(
       case ExprTags.ApplyBuiltin4 => visitApplyBuiltin4(e.asInstanceOf[ApplyBuiltin4])
       case ExprTags.And           => visitAnd(e.asInstanceOf[And])
       case ExprTags.Or            => visitOr(e.asInstanceOf[Or])
+      case ExprTags.NullCoal      => visitNullCoalesce(e.asInstanceOf[NullCoal])
       case ExprTags.UnaryOp       => visitUnaryOp(e.asInstanceOf[UnaryOp])
       case ExprTags.Lookup        => visitLookup(e.asInstanceOf[Lookup])
       case ExprTags.Function      =>
@@ -2072,6 +2073,13 @@ class Evaluator(
 
   private def compareTypeMismatch(x: Val, y: Val): Nothing =
     Error.fail("Cannot compare " + x.prettyName + " with " + y.prettyName, x.pos)
+
+  def visitNullCoalesce(e: NullCoal)(implicit scope: ValScope): Val = {
+    visitExpr(e.lhs) match {
+      case _: Val.Null => visitExpr(e.rhs)
+      case any         => any
+    }
+  }
 
   // Tuple match keeps the method compact for JIT inlining. Scala 2.13+ pattern matcher lowers
   // this to direct instanceof/checkcast without Tuple2 allocation. The inner array loop uses nested

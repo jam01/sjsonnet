@@ -100,6 +100,12 @@ abstract class ExprTransform {
         if ((x2 eq x) && (y2 eq y)) expr
         else Or(pos, x2, y2)
 
+      case NullCoal(pos, x, y) =>
+        val x2 = transform(x)
+        val y2 = transform(y)
+        if ((x2 eq x) && (y2 eq y)) expr
+        else NullCoal(pos, x2, y2)
+
       case InSuper(pos, x, selfIdx) =>
         val x2 = transform(x)
         if (x2 eq x) expr

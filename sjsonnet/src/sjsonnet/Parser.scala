@@ -31,14 +31,15 @@ object Parser {
       op match {
         case "||"                           => 0
         case "&&"                           => 1
-        case "|"                            => 2
-        case "^"                            => 3
-        case "&"                            => 4
-        case "==" | "!="                    => 5
-        case "<" | ">" | "<=" | ">=" | "in" => 6
-        case "<<" | ">>"                    => 7
-        case "+" | "-"                      => 8
-        case "*" | "/" | "%"                => 9
+        case "??"                           => 2
+        case "|"                            => 3
+        case "^"                            => 4
+        case "&"                            => 5
+        case "==" | "!="                    => 6
+        case "<" | ">" | "<=" | ">=" | "in" => 7
+        case "<<" | ">>"                    => 8
+        case "+" | "-"                      => 9
+        case "*" | "/" | "%"                => 10
         case _ => throw new IllegalArgumentException("Unknown operator: " + op)
       }
   }
@@ -635,10 +636,12 @@ class Parser(
                       case "|"  => Expr.BinaryOp.OP_|
                       case "&&" => Expr.BinaryOp.OP_&&
                       case "||" => Expr.BinaryOp.OP_||
+                      case "??" => Expr.BinaryOp.OP_??
                     }
                   result = op1 match {
                     case Expr.BinaryOp.OP_&& => Expr.And(offset, result, rhs)
                     case Expr.BinaryOp.OP_|| => Expr.Or(offset, result, rhs)
+                    case Expr.BinaryOp.OP_?? => Expr.NullCoal(offset, result, rhs)
                     case _                   => Expr.BinaryOp(offset, result, op1, rhs)
                   }
                   true
@@ -1079,6 +1082,7 @@ class Parser(
       "!=",
       "&&",
       "||",
+      "??",
       "*",
       "/",
       "%",
