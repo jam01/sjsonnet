@@ -44,6 +44,7 @@ class Evaluator(
       case e: ApplyBuiltin4      => visitApplyBuiltin4(e)
       case e: And                => visitAnd(e)
       case e: Or                 => visitOr(e)
+      case e: NullCoal           => visitNullCoalesce(e)
       case e: UnaryOp            => visitUnaryOp(e)
       case e: Apply1             => visitApply1(e)
       case e: Lookup             => visitLookup(e)
@@ -848,6 +849,13 @@ class Evaluator(
     case Nil => scopes
   }
 
+  def visitNullCoalesce(e: NullCoal)(implicit scope: ValScope): Val = {
+    visitExpr(e.lhs) match {
+      case _: Val.Null => visitExpr(e.rhs)
+      case any         => any
+    }
+  }
+
   def compare(x: Val, y: Val): Int = (x, y) match {
     case (_: Val.Null, _: Val.Null) => 0
     case (x: Val.Num, y: Val.Num)   => x.asDouble.compareTo(y.asDouble)
@@ -968,6 +976,7 @@ class NewEvaluator(
       case ExprTags.ImportStr         => visitImportStr(e.asInstanceOf[ImportStr])
       case ExprTags.ImportBin         => visitImportBin(e.asInstanceOf[ImportBin])
       case ExprTags.Error             => visitError(e.asInstanceOf[Expr.Error])
+      case ExprTags.NullCoal          => visitNullCoalesce(e.asInstanceOf[NullCoal])
       case _                          => visitInvalid(e)
     }
   } catch {

@@ -549,6 +549,9 @@ object EvaluatorTests extends TestSuite {
 
       val ex2 = assertThrows[Exception](eval("1 || 2", useNewEvaluator = useNewEvaluator))
       assert(ex2.getMessage.contains("binary operator || does not operate on numbers."))
+
+      eval("'foo' ?? null") ==> ujson.Str("foo")
+      eval("null ?? 'bar'") ==> ujson.Str("bar")
     }
     test("stdToString") {
       eval("""std.toString({k: "v"})""", useNewEvaluator = useNewEvaluator) ==> ujson.Str(
