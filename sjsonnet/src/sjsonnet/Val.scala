@@ -404,10 +404,11 @@ object Val {
       }
     }
 
-    def value(k: String, pos: Position, self: Obj = this)(implicit evaluator: EvalScope): Val = {
+    def value(k: String, pos: Position, self: Obj = this, safe: Boolean = false)(implicit
+        evaluator: EvalScope): Val = {
       if (static) {
         valueCache.get(k) match {
-          case null => Error.fail("Field does not exist: " + k, pos)
+          case null => if (safe) Val.Null(pos) else Error.fail("Field does not exist: " + k, pos)
           case x    => x
         }
       } else {
@@ -417,7 +418,7 @@ object Val {
           cachedValue
         } else {
           valueRaw(k, self, pos, valueCache, cacheKey) match {
-            case null => Error.fail("Field does not exist: " + k, pos)
+            case null => if (safe) Val.Null(pos) else Error.fail("Field does not exist: " + k, pos)
             case x    => x
           }
         }

@@ -269,11 +269,13 @@ object Expr {
     override private[sjsonnet] def tag = ExprTags.ApplyBuiltin4
     override def exprErrorString: String = s"std.${func.functionName}"
   }
-  final case class Select(pos: Position, value: Expr, name: String) extends Expr {
+  final case class Select(pos: Position, value: Expr, name: String, safe: Boolean = false)
+      extends Expr {
     final override private[sjsonnet] def tag = ExprTags.Select
     override def exprErrorString: String = s"${super.exprErrorString} $name"
   }
-  final case class SelectSuper(pos: Position, selfIdx: Int, name: String) extends Expr {
+  final case class SelectSuper(pos: Position, selfIdx: Int, name: String, safe: Boolean = false)
+      extends Expr {
     final override private[sjsonnet] def tag = ExprTags.SelectSuper
     override def exprErrorString: String = s"${super.exprErrorString} $name"
   }

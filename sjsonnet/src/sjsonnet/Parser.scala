@@ -433,9 +433,10 @@ class Parser(
   def exprSuffix2[$: P](currentDepth: Int): P[Expr => Expr] = {
     P(
       Pos.flatMapX { i =>
-        CharIn(".[({")./.!.map(_(0)).flatMapX { c =>
+        (CharIn(".[({") | StringIn("?."))./.!.map(_(0)).flatMapX { c =>
           (c: @switch) match {
             case '.' => Pass ~ id.map(x => Expr.Select(i, _: Expr, x))
+            case '?' => Pass ~ id.map(x => Expr.Select(i, _: Expr, x, safe = true))
             case '[' =>
               Pass ~ (expr(currentDepth + 1).? ~ (":" ~ expr(currentDepth + 1).?).rep ~ "]").map {
                 case (Some(tree), Seq()) => Expr.Lookup(i, _: Expr, tree)

@@ -13,6 +13,8 @@ object EvaluatorTests extends TestSuite {
     }
     test("objects") {
       eval("{x: 1}.x", useNewEvaluator = useNewEvaluator) ==> ujson.Num(1)
+      eval("{x: 1}?.y", useNewEvaluator = useNewEvaluator) ==> ujson.Null
+      eval("{x: 1}?.y?.z", useNewEvaluator = useNewEvaluator) ==> ujson.Null
     }
     test("arrays") {
       eval("[1, [2, 3], 4][1][0]", useNewEvaluator = useNewEvaluator) ==> ujson.Num(2)
@@ -552,6 +554,8 @@ object EvaluatorTests extends TestSuite {
 
       eval("'foo' ?? null") ==> ujson.Str("foo")
       eval("null ?? 'bar'") ==> ujson.Str("bar")
+      eval("local obj = { keyA: {} }; obj?.keyA?.first ?? 'defaultA'") ==>
+        ujson.Str("defaultA")
     }
     test("stdToString") {
       eval("""std.toString({k: "v"})""", useNewEvaluator = useNewEvaluator) ==> ujson.Str(
