@@ -45,12 +45,15 @@ class StaticOptimizer(
     super.transform(check(_e)) match {
       case a: Apply => transformApply(a)
 
-      case e @ Select(p, obj: Val.Obj, name) if obj.containsKey(name) =>
+      case e @ Select(p, obj: Val.Obj, name, _) if obj.containsKey(name) =>
         try obj.value(name, p)(ev).asInstanceOf[Expr]
         catch { case _: Exception => e }
 
-      case Select(pos, ValidSuper(_, selfIdx), name) =>
-        SelectSuper(pos, selfIdx, name)
+      case Select(p, obj: Val.Obj, _, true) =>
+        Val.Null(p)
+
+      case Select(pos, ValidSuper(_, selfIdx), name, safe) =>
+        SelectSuper(pos, selfIdx, name, safe)
 
       case Lookup(pos, ValidSuper(_, selfIdx), index) =>
         LookupSuper(pos, selfIdx, index)

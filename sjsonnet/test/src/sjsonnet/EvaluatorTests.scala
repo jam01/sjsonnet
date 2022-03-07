@@ -41,6 +41,8 @@ object EvaluatorTests extends TestSuite {
       eval("{x: 1}.x") ==> ujson.Num(1)
       eval("std.objectKeysValues({a: error 'unused'})[0].key") ==> ujson.Str("a")
       assert(evalErr("std.objectKeysValues({a: error 'boom'})[0].value").contains("boom"))
+      eval("{x: 1}?.y") ==> ujson.Null
+      eval("{x: 1}?.y?.z") ==> ujson.Null
     }
     test("arrays") {
       eval("[1, [2, 3], 4][1][0]") ==> ujson.Num(2)
@@ -660,6 +662,8 @@ object EvaluatorTests extends TestSuite {
 
       eval("'foo' ?? null") ==> ujson.Str("foo")
       eval("null ?? 'bar'") ==> ujson.Str("bar")
+      eval("local obj = { keyA: {} }; obj?.keyA?.first ?? 'defaultA'") ==>
+        ujson.Str("defaultA")
     }
     test("stdToString") {
       eval("""std.toString({k: "v"})""") ==> ujson.Str(

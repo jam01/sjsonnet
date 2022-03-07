@@ -77,7 +77,7 @@ object Expr {
   private[sjsonnet] def callTargetName(value: Expr): String = value match {
     case ValidId(_, name, _) => name
     case Id(_, name)         => name
-    case Select(_, _, name)  => name
+    case Select(_, _, name, _) => name
     case f: Val.Builtin      => f.qualifiedName
     case f: Val.Func         =>
       val n = f.functionName
@@ -373,11 +373,17 @@ object Expr {
     override private[sjsonnet] def tag = ExprTags.ApplyBuiltin4
     override def exprErrorString: String = func.qualifiedName
   }
-  final case class Select(var pos: Position, value: Expr, name: String) extends Expr {
+  final case class Select(var pos: Position, value: Expr, name: String, safe: Boolean = false)
+      extends Expr {
     final override private[sjsonnet] def tag = ExprTags.Select
     override def exprErrorString: String = s"${super.exprErrorString} $name"
   }
-  final case class SelectSuper(var pos: Position, selfIdx: Int, name: String) extends Expr {
+  final case class SelectSuper(
+      var pos: Position,
+      selfIdx: Int,
+      name: String,
+      safe: Boolean = false)
+      extends Expr {
     final override private[sjsonnet] def tag = ExprTags.SelectSuper
     override def exprErrorString: String = s"${super.exprErrorString} $name"
   }

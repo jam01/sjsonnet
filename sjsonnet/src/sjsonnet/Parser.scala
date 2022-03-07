@@ -673,10 +673,11 @@ class Parser(
     // `ctx.index - 1` after the single-char match defers the allocation to the matching branch and
     // also drops the `.map(_(0))` step.
     P(
-      CharIn(".[({")./.!.flatMapX { s =>
-        val i = new Position(fileScope, implicitly[P[$]].index - 1)
+      (CharIn(".[({") | StringIn("?."))./.!.flatMapX { s =>
+        val i = new Position(fileScope, implicitly[P[$]].index - s.length)
         (s.charAt(0): @switch) match {
           case '.' => Pass ~ id.map(x => Expr.Select(i, _: Expr, x))
+          case '?' => Pass ~ id.map(x => Expr.Select(i, _: Expr, x, safe = true))
           case '[' =>
             Pass ~ (expr(currentDepth + 1).? ~ (":" ~ expr(currentDepth + 1).?).rep ~ "]").map {
               case (Some(tree), Seq()) => Expr.Lookup(i, _: Expr, tree)

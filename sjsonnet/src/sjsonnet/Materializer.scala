@@ -885,9 +885,11 @@ object Materializer extends Materializer {
       case Expr.UnaryOp(_, _, v)     => hasSelfRefExpr(v, inNestedObj)
       case Expr.BinaryOp(_, l, _, r) =>
         hasSelfRefExpr(l, inNestedObj) || hasSelfRefExpr(r, inNestedObj)
-      case Expr.And(_, l, r)    => hasSelfRefExpr(l, inNestedObj) || hasSelfRefExpr(r, inNestedObj)
-      case Expr.Or(_, l, r)     => hasSelfRefExpr(l, inNestedObj) || hasSelfRefExpr(r, inNestedObj)
-      case Expr.Select(_, v, _) => hasSelfRefExpr(v, inNestedObj)
+      case Expr.And(_, l, r)      => hasSelfRefExpr(l, inNestedObj) || hasSelfRefExpr(r, inNestedObj)
+      case Expr.Or(_, l, r)       => hasSelfRefExpr(l, inNestedObj) || hasSelfRefExpr(r, inNestedObj)
+      case Expr.NullCoal(_, l, r) =>
+        hasSelfRefExpr(l, inNestedObj) || hasSelfRefExpr(r, inNestedObj)
+      case Expr.Select(_, v, _, _) => hasSelfRefExpr(v, inNestedObj)
       case Expr.Lookup(_, v, idx) =>
         hasSelfRefExpr(v, inNestedObj) || hasSelfRefExpr(idx, inNestedObj)
       case Expr.IfElse(_, c, t, el) =>
