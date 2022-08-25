@@ -13,7 +13,10 @@ object EvaluatorTests extends TestSuite {
     }
     test("objects") {
       eval("{x: 1}.x", useNewEvaluator = useNewEvaluator) ==> ujson.Num(1)
+      eval("{x: 1}.'x'", useNewEvaluator = useNewEvaluator) ==> ujson.Num(1)
+      eval("{x: 1}.\"x\"", useNewEvaluator = useNewEvaluator) ==> ujson.Num(1)
       eval("{x: 1}?.y", useNewEvaluator = useNewEvaluator) ==> ujson.Null
+      eval("{x: 1}?.'y'", useNewEvaluator = useNewEvaluator) ==> ujson.Null
       eval("{x: 1}?.y?.z", useNewEvaluator = useNewEvaluator) ==> ujson.Null
     }
     test("arrays") {
