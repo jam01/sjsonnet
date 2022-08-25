@@ -676,8 +676,14 @@ class Parser(
       (CharIn(".[({") | StringIn("?."))./.!.flatMapX { s =>
         val i = new Position(fileScope, implicitly[P[$]].index - s.length)
         (s.charAt(0): @switch) match {
-          case '.' => Pass ~ id.map(x => Expr.Select(i, _: Expr, x))
-          case '?' => Pass ~ id.map(x => Expr.Select(i, _: Expr, x, safe = true))
+          case '.' =>
+            Pass ~ (id.map(x => Expr.Select(i, _: Expr, x)) | string.map(x =>
+              Expr.Select(i, _: Expr, x)
+            ))
+          case '?' =>
+            Pass ~ (id.map(x => Expr.Select(i, _: Expr, x, safe = true)) | string.map(x =>
+              Expr.Select(i, _: Expr, x, safe = true)
+            ))
           case '[' =>
             Pass ~ (expr(currentDepth + 1).? ~ (":" ~ expr(currentDepth + 1).?).rep ~ "]").map {
               case (Some(tree), Seq()) => Expr.Lookup(i, _: Expr, tree)
