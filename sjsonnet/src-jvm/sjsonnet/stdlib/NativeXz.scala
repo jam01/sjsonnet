@@ -20,8 +20,8 @@ object NativeXz extends AbstractFunctionModule {
           case Val.Null(_) =>
             // Use default compression level if the user didn't set one
             None
-          case Val.Num(_, n) =>
-            Some(n.toInt)
+          case x: Val.Num =>
+            Some(x.asInt)
           case x =>
             Error.fail("Cannot xz encode with compression level " + x.prettyName)
         }

@@ -1,7 +1,8 @@
 package sjsonnet.stdlib
 
-import sjsonnet._
+import sjsonnet.*
 import sjsonnet.functions.AbstractFunctionModule
+import ujson.StringRenderer
 
 object TypeModule extends AbstractFunctionModule {
   def name = "type"
@@ -42,10 +43,10 @@ object TypeModule extends AbstractFunctionModule {
 
   private object AssertEqual extends Val.Builtin2("assertEqual", "a", "b") {
     def evalRhs(v1: Lazy, v2: Lazy, ev: EvalScope, pos: Position): Val = {
-      val x1 = Materializer(v1.force)(ev)
-      val x2 = Materializer(v2.force)(ev)
-      if (x1 == x2) Val.True(pos)
-      else Error.fail("assertEqual failed: " + x1 + " != " + x2)
+      val x1 = v1.force
+      val x2 = v2.force
+      if (ev.equal(v1.force, v2.force)) Val.True(pos)
+      else Error.fail("assertEqual failed: " + Materializer.apply0(x1, StringRenderer())(ev) + " != " + Materializer.apply0(x2, StringRenderer())(ev))
     }
   }
 

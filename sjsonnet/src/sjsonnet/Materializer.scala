@@ -43,8 +43,20 @@ abstract class Materializer {
           }
         }
         objVisitor.visitEnd(-1)
-      case Val.Num(pos, _) => storePos(pos); visitor.visitFloat64(v.asDouble, -1)
-      case xs: Val.Arr     =>
+      case num: Val.Num =>
+        storePos(num.pos);
+        num match
+          case Val.Int64(pos, n)   => visitor.visitInt64(n, -1)
+          case Val.Float64(pos, n) => visitor.visitFloat64(n, -1)
+          case Val.Dec128(pos, n)  =>
+            val s = num.toString()
+            visitor.visitFloat64StringParts(
+              s,
+              s.indexOf('.'),
+              s.indexWhere(c => (c | 0x20) == 'e'),
+              -1
+            )
+      case xs: Val.Arr =>
         storePos(xs.pos)
         val arrVisitor = visitor.visitArray(xs.length, -1)
         var i = 0

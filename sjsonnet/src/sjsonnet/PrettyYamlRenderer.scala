@@ -118,6 +118,14 @@ class PrettyYamlRenderer(
     out
   }
 
+  override def visitFloat64StringParts(s: CharSequence, decIndex: Int, expIndex: Int, index: Int): Writer = {
+    addSpaceAfterColon()
+    flushBuffer()
+    out.append(s)
+    saveCurrentPos()
+    out
+  }
+
   val loadedFileContents: mutable.HashMap[Path, Array[Int]] =
     mutable.HashMap.empty[Path, Array[Int]]
   def saveCurrentPos(): Unit = {

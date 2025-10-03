@@ -42,7 +42,7 @@ object StringModule extends AbstractFunctionModule {
       if (codePointCount != 1) {
         Error.fail("expected a single character string, got " + s)
       } else {
-        Val.Num(pos, s.codePointAt(0).toDouble)
+        Val.Num(pos, s.codePointAt(0).toLong)
       }
     }
   }
@@ -286,7 +286,7 @@ object StringModule extends AbstractFunctionModule {
   private object ParseInt extends Val.Builtin1("parseInt", "str") {
     def evalRhs(str: Lazy, ev: EvalScope, pos: Position): Val =
       try {
-        Val.Num(pos, str.force.asString.toLong.toDouble)
+        Val.Num(pos, str.force.asString.toLong)
       } catch {
         case _: NumberFormatException =>
           Error.fail("Cannot parse '" + str.force.asString + "' as an integer in base 10")
@@ -295,12 +295,12 @@ object StringModule extends AbstractFunctionModule {
 
   private object ParseOctal extends Val.Builtin1("parseOctal", "str") {
     def evalRhs(str: Lazy, ev: EvalScope, pos: Position): Val =
-      Val.Num(pos, java.lang.Long.parseLong(str.force.asString, 8).toDouble)
+      Val.Num(pos, java.lang.Long.parseLong(str.force.asString, 8))
   }
 
   private object ParseHex extends Val.Builtin1("parseHex", "str") {
     def evalRhs(str: Lazy, ev: EvalScope, pos: Position): Val =
-      Val.Num(pos, java.lang.Long.parseLong(str.force.asString, 16).toDouble)
+      Val.Num(pos, java.lang.Long.parseLong(str.force.asString, 16))
   }
 
   private object AsciiUpper extends Val.Builtin1("asciiUpper", "str") {

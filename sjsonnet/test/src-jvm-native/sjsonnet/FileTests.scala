@@ -12,13 +12,25 @@ object FileTests extends BaseFileTests {
         "error.recursive_import.jsonnet",
         "error.recursive_function_nonterm.jsonnet",
         "error.function_infinite_default.jsonnet",
-        "error.obj_recursive.jsonnet"
+        "error.obj_recursive.jsonnet",
+
+        "error.overflow.jsonnet", // no overflow, infinite number in ujson
+        "error.overflow2.jsonnet", // no overflow, infinite number in ujson
       )
-    else Set.empty[String]
+    else Set(
+      "error.overflow.jsonnet", // no overflow, infinite number in ujson
+      "error.overflow2.jsonnet", // no overflow, infinite number in ujson
+    )
 
   val goTestDataSkippedTests: Set[String] = Set(
     // We support base64 of unicode strings
-    "builtinBase64_string_high_codepoint.jsonnet"
+    "builtinBase64_string_high_codepoint.jsonnet",
+
+    "div4.jsonnet", // infinite number in ujson
+    "inf_min_number.jsonnet", // infinite number in ujson
+    "inf_mul_number.jsonnet", // infinite number in ujson
+    "inf_sum_number.jsonnet", // infinite number in ujson
+    "bitwise_or9.jsonnet", // ujson truncates int64 at 2^53
   )
 
   val tests: Tests = Tests {

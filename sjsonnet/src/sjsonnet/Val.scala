@@ -4,6 +4,7 @@ import java.util
 import sjsonnet.Expr.Member.Visibility
 import sjsonnet.Expr.Params
 
+import java.math.MathContext
 import scala.annotation.tailrec
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
@@ -64,10 +65,13 @@ sealed abstract class Val extends Lazy {
   def asBoolean: Boolean = failAs("Boolean")
   def asInt: Int = failAs("Int")
   def asLong: Long = failAs("Long")
-  def asDouble: Double = failAs("Number")
+  def asDouble: Double = failAs("Double")
   def asObj: Val.Obj = failAs("Object")
   def asArr: Val.Arr = failAs("Array")
   def asFunc: Val.Func = failAs("Function")
+
+  def asNum: Val.Num = failAs("Number")
+  def asBigDecimal: BigDecimal = failAs("Decimal128")
 }
 
 class PrettyNamed[T](val s: String)
@@ -108,15 +112,77 @@ object Val {
     def prettyName = "string"
     override def asString: String = value
   }
-  final case class Num(pos: Position, private val value: Double) extends Literal {
+  sealed abstract class Num extends Literal {
+    def prettyName = "number"
+    def asPositiveInt: Int // for indexing
+    def asSafeLong: Long // for bitwise ops
+
+    override def asNum: Val.Num = this
+    def isZero: Boolean = false
+  }
+
+  object Num {
+    // for binary compatibility
+    def apply(pos: Position, n: Double): Num = Float64(pos, n)
+    def apply(pos: Position, n: Long): Num = Int64(pos, n)
+    def apply(pos: Position, n: BigDecimal): Num = Dec128(pos, n)
+
+    def apply(pos: Position, s: String): Num = {
+      apply(pos, s, s.indexOf('.'), s.indexWhere(c => (c | 0x20) == 'e'))
+    }
+
+    private val floatAsBigDecimal = sys.props.getOrElse("sjsonnet.floatAsBigDecimal", "true").toBoolean
+    def apply(pos: Position, s: String, decIndex: Int, expIndex: Int): Num = {
+      if (decIndex == -1 && expIndex == -1) {
+        s.toLongOption match {
+          case Some(l) => Int64(pos, l)
+          case None    => Dec128(pos, BigDecimal(s, MathContext.DECIMAL128))
+        }
+      } else {
+        if (floatAsBigDecimal) Dec128(pos, BigDecimal(s, MathContext.DECIMAL128))
+        else if (NumberMath.allowFloat64LiteralWithIndexes(s, decIndex, expIndex)) s.toDoubleOption match {
+          case Some(d) if !d.isInfinite && !d.isNaN => Float64(pos, d)
+          case _                                    => Dec128(pos, BigDecimal(s, MathContext.DECIMAL128))
+        }
+        else Dec128(pos, BigDecimal(s, MathContext.DECIMAL128))
+      }
+    }
+  }
+
+  final case class Int64(pos: Position, value: Long) extends Num {
+    override def asInt: Int = value.toInt
+    override def asPositiveInt: Int = {
+      if (!value.isValidInt) {
+        Error.fail("index value is not a valid integer")
+      }
+
+      if (value.toInt < 0) {
+        Error.fail("index value is not a positive integer, got: " + value.toInt)
+      }
+      value.toInt
+    }
+    override def asLong: Long = value
+    override def asSafeLong: Long = {
+      if (value < DOUBLE_MIN_SAFE_INTEGER || value > DOUBLE_MAX_SAFE_INTEGER) {
+        Error.fail("numeric value outside safe integer range for bitwise operation")
+      }
+      value
+    }
+    override def asDouble: Double = value.toDouble
+
+    override def isZero: Boolean = value == 0
+    override def toString: String = value.toString
+  }
+  final case class Float64(pos: Position, value: Double) extends Num {
+    if (value.isNaN) {
+      Error.fail("not a number")
+    }
     if (value.isInfinite) {
       Error.fail("overflow")
     }
 
-    def prettyName = "number"
     override def asInt: Int = value.toInt
-
-    def asPositiveInt: Int = {
+    override def asPositiveInt: Int = {
       if (!value.isWhole || !value.isValidInt) {
         Error.fail("index value is not a valid integer")
       }
@@ -126,10 +192,8 @@ object Val {
       }
       value.toInt
     }
-
     override def asLong: Long = value.toLong
-
-    def asSafeLong: Long = {
+    override def asSafeLong: Long = {
       if (value.isInfinite || value.isNaN) {
         Error.fail("numeric value is not finite")
       }
@@ -139,12 +203,53 @@ object Val {
       }
       value.toLong
     }
-
     override def asDouble: Double = {
-      if (value.isNaN) {
+      value
+    }
+
+    override def isZero: Boolean = value == 0
+    override def toString: String = value.toString
+  }
+  final case class Dec128(pos: Position, value: BigDecimal) extends Num {
+    if (value.mc != MathContext.DECIMAL128)
+      Error.fail("value must be a BigDecimal with MathContext.DECIMAL128")
+
+    override def asInt: Int = value.toInt
+    override def asPositiveInt: Int = {
+      if (!value.isWhole || !value.isValidInt) {
+        Error.fail("index value is not a valid integer")
+      }
+
+      if (value.toInt < 0) {
+        Error.fail("index value is not a positive integer, got: " + value.toInt)
+      }
+      value.toInt
+    }
+    override def asLong: Long = value.toLong
+    override def asSafeLong: Long = {
+      if (value < DOUBLE_MIN_SAFE_INTEGER || value > DOUBLE_MAX_SAFE_INTEGER) {
+        Error.fail("numeric value outside safe integer range for bitwise operation")
+      }
+      value.toLong
+    }
+    override def asDouble: Double = {
+      val d = value.toDouble // TODO: losing precision
+      if (d.isNaN) {
         Error.fail("not a number")
       }
-      value
+      if (d.isInfinite) {
+        Error.fail("overflow")
+      }
+      d
+    }
+
+    override def isZero: Boolean = value.signum == 0
+    override def asBigDecimal: BigDecimal = value
+    override def toString: String = {
+      if (value.isWhole)
+        if (value.isValidLong) value.toLong.toString
+        else value.setScale(0, BigDecimal.RoundingMode.HALF_EVEN).toBigInt.toString()
+      else value.toString()
     }
   }
 
@@ -441,7 +546,7 @@ object Val {
         case (_, rStr: Val.Str) =>
           Val.Str(pos, renderString(l) ++ rStr.value)
         case (lNum: Val.Num, rNum: Val.Num) =>
-          Val.Num(pos, lNum.asDouble + rNum.asDouble)
+          NumberMath.add(pos, lNum, rNum)
         case (lArr: Val.Arr, rArr: Val.Arr) =>
           Val.Arr(pos, lArr.asLazyArray ++ rArr.asLazyArray)
         case (lObj: Val.Obj, rObj: Val.Obj) =>

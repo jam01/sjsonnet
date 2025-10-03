@@ -12,7 +12,10 @@ object FileTests extends BaseFileTests {
     "error.recursive_import.jsonnet",
     "error.recursive_function_nonterm.jsonnet",
     "error.function_infinite_default.jsonnet",
-    "error.obj_recursive.jsonnet"
+    "error.obj_recursive.jsonnet",
+
+    "error.overflow.jsonnet", // no overflow, infinite number in ujson
+    "error.overflow2.jsonnet", // no overflow, infinite number in ujson
   )
 
   val goTestDataSkippedTests: Set[String] = Set(
@@ -27,7 +30,13 @@ object FileTests extends BaseFileTests {
     "std.md5_3.jsonnet",
     "std.md5_4.jsonnet",
     "std.md5_5.jsonnet",
-    "std.md5_6.jsonnet"
+    "std.md5_6.jsonnet",
+
+    "div4.jsonnet", // infinite number in ujson
+    "inf_min_number.jsonnet", // infinite number in ujson
+    "inf_mul_number.jsonnet", // infinite number in ujson
+    "inf_sum_number.jsonnet", // infinite number in ujson
+    "bitwise_or9.jsonnet", // ujson truncates int64 at 2^53
   )
 
   val tests: Tests = Tests {

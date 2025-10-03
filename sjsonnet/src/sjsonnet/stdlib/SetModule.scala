@@ -97,7 +97,8 @@ object SetModule extends AbstractFunctionModule {
           val keys: Array[Val] = vs.map(v =>
             keyFFunc(Array(v.force), null, pos.noOffset)(ev, TailstrictModeDisabled).force
           )
-          val keyType = keys(0).getClass
+          val key = keys(0)
+          val keyType = key.getClass
           if (classOf[Val.Bool].isAssignableFrom(keyType)) {
             Error.fail("Cannot sort with key values that are booleans")
           }
@@ -109,8 +110,8 @@ object SetModule extends AbstractFunctionModule {
 
           val sortedIndices = if (keyType == classOf[Val.Str]) {
             indices.sortBy(i => keys(i).cast[Val.Str].asString)(Util.CodepointStringOrdering)
-          } else if (keyType == classOf[Val.Num]) {
-            indices.sortBy(i => keys(i).cast[Val.Num].asDouble)
+          } else if (key.isInstanceOf[Val.Num]) {
+            indices.sortBy(i => keys(i).cast[Val.Num])(NumberMath.compareTo(_, _))
           } else if (keyType == classOf[Val.Arr]) {
             indices.sortBy(i => keys(i).cast[Val.Arr])(ev.compare(_, _))
           } else {
@@ -119,7 +120,8 @@ object SetModule extends AbstractFunctionModule {
 
           sortedIndices.map(i => vs(i))
         } else {
-          val keyType = vs(0).force.getClass
+          val key = vs(0).force
+          val keyType = key.getClass
           if (classOf[Val.Bool].isAssignableFrom(keyType)) {
             Error.fail("Cannot sort with values that are booleans")
           }
@@ -128,8 +130,8 @@ object SetModule extends AbstractFunctionModule {
 
           if (keyType == classOf[Val.Str]) {
             vs.map(_.force.cast[Val.Str]).sortBy(_.asString)(Util.CodepointStringOrdering)
-          } else if (keyType == classOf[Val.Num]) {
-            vs.map(_.force.cast[Val.Num]).sortBy(_.asDouble)
+          } else if (key.isInstanceOf[Val.Num]) {
+            vs.map(_.force.cast[Val.Num]).sorted(NumberMath.compareTo(_, _))
           } else if (keyType == classOf[Val.Arr]) {
             vs.map(_.force.cast[Val.Arr]).sortBy(identity)(ev.compare(_, _))
           } else if (keyType == classOf[Val.Obj]) {

@@ -86,7 +86,7 @@ object ParserTests extends TestSuite {
 
     test("computedImports") {
       parse("""local foo = import "foo"; 0""") ==>
-      LocalExpr(pos(6), Array(Bind(pos(6), "foo", null, Import(pos(12), "foo"))), Num(pos(26), 0.0))
+      LocalExpr(pos(6), Array(Bind(pos(6), "foo", null, Import(pos(12), "foo"))), Num(pos(26), 0))
       parse("""local foo = (import "foo") + bar; 0""") ==>
       LocalExpr(
         pos(6),
@@ -98,7 +98,7 @@ object ParserTests extends TestSuite {
             BinaryOp(pos(27), Import(pos(13), "foo"), 3, Id(pos(29), "bar"))
           )
         ),
-        Num(pos(34), 0.0)
+        Num(pos(34), 0)
       )
 
       parseErr("""import "foo".bar""")

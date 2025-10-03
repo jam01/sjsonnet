@@ -63,6 +63,11 @@ class TomlRenderer(
     }
   }
 
+  override def visitInt64(l: Long, index: Int): StringWriter = {
+    out.write(java.lang.Long.toString(l))
+    flush
+  }
+
   override def visitFloat64(d: Double, index: Int): StringWriter = {
     d match {
       case Double.PositiveInfinity          => out.write("inf")
@@ -71,6 +76,11 @@ class TomlRenderer(
       case d if math.round(d).toDouble == d => out.write(java.lang.Long.toString(d.toLong))
       case d                                => out.write(java.lang.Double.toString(d))
     }
+    flush
+  }
+
+  override def visitFloat64StringParts(s: CharSequence, decIndex: Int, expIndex: Int, index: Int): StringWriter = {
+    out.write(s.toString)
     flush
   }
 

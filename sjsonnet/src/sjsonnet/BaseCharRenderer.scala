@@ -3,14 +3,13 @@ package sjsonnet
 // Vendored version of `ujson.BaseCharRenderer` from ujson 1.3.7
 // with some private definitions made accessible to subclasses
 
-import ujson._
 import upickle.core.{ArrVisitor, ObjVisitor, Visitor}
 class BaseCharRenderer[T <: upickle.core.CharOps.Output](
     out: T,
     indent: Int = -1,
     escapeUnicode: Boolean = false,
     newline: Array[Char] = Array('\n'))
-    extends JsVisitor[T, T] {
+    extends JsonVisitor[T, T] {
 
   override def visitJsonableObject(length: Int, index: Int): ObjVisitor[T, T] =
     visitObject(length, index)

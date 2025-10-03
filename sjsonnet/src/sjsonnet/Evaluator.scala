@@ -187,18 +187,24 @@ class Evaluator(
         }
       case Expr.UnaryOp.OP_- =>
         v match {
-          case Val.Num(_, v) => Val.Num(pos, -v)
-          case _             => fail()
+          case Val.Int64(_, n)   =>
+            if (n == Long.MinValue) Val.Dec128(pos, -BigDecimal.decimal(n))
+            else Val.Int64(pos, -n)
+          case Val.Float64(_, v) => Val.Float64(pos, -v)
+          case Val.Dec128(_, n)  => Val.Dec128(pos, -n)
+          case _                 => fail()
         }
       case Expr.UnaryOp.OP_~ =>
         v match {
-          case Val.Num(_, v) => Val.Num(pos, (~v.toLong).toDouble)
-          case _             => fail()
+          case x: Val.Num => Val.Num(pos, ~x.asSafeLong)
+          case _          => fail()
         }
       case Expr.UnaryOp.OP_+ =>
         v match {
-          case Val.Num(_, v) => Val.Num(pos, v)
-          case _             => fail()
+          case Val.Int64(_, n)   => Val.Int64(pos, n)
+          case Val.Float64(_, v) => Val.Float64(pos, v)
+          case Val.Dec128(_, n)  => Val.Dec128(pos, n)
+          case _                 => fail()
         }
       case _ => fail()
     }
@@ -411,7 +417,7 @@ class Evaluator(
         .resolveAndReadOrFail(e.value, e.pos, binaryData = true)
         ._2
         .readRawBytes()
-        .map(x => Val.Num(e.pos, (x & 0xff).doubleValue))
+        .map(x => Val.Num(e.pos, (x & 0xff).longValue))
     )
 
   def visitImport(e: Import): Val = {
@@ -490,7 +496,7 @@ class Evaluator(
 
       case Expr.BinaryOp.OP_+ =>
         (l, r) match {
-          case (Val.Num(_, l), Val.Num(_, r)) => Val.Num(pos, l + r)
+          case (a: Val.Num, b: Val.Num)       => NumberMath.add(pos, a, b)
           case (Val.Str(_, l), Val.Str(_, r)) => Val.Str(pos, l + r)
           case (Val.Str(_, l), r)             => Val.Str(pos, l + Materializer.stringify(r))
           case (l, Val.Str(_, r))             => Val.Str(pos, Materializer.stringify(l) + r)
@@ -501,65 +507,69 @@ class Evaluator(
 
       case Expr.BinaryOp.OP_- =>
         (l, r) match {
-          case (Val.Num(_, l), Val.Num(_, r)) => Val.Num(pos, l - r)
-          case _                              => fail()
+          case (a: Val.Num, b: Val.Num) => NumberMath.subtract(pos, a, b)
+          case _                        => fail()
         }
 
       case Expr.BinaryOp.OP_* =>
         (l, r) match {
-          case (Val.Num(_, l), Val.Num(_, r)) => Val.Num(pos, l * r)
-          case _                              => fail()
+          case (a: Val.Num, b: Val.Num) => NumberMath.multiply(pos, a, b)
+          case _                        => fail()
         }
 
       case Expr.BinaryOp.OP_/ =>
         (l, r) match {
-          case (Val.Num(_, l), Val.Num(_, r)) =>
-            if (r == 0) Error.fail("division by zero", pos)
-            Val.Num(pos, l / r)
+          case (a: Val.Num, b: Val.Num) =>
+            if (b.isZero)
+              Error.fail(
+                "division by zero",
+                pos
+              )
+            NumberMath.divide(pos, a, b)
           case _ => fail()
         }
 
       case Expr.BinaryOp.OP_% =>
         (l, r) match {
-          case (Val.Num(_, l), Val.Num(_, r)) => Val.Num(pos, l % r)
-          case (Val.Str(_, l), r)             => Val.Str(pos, Format.format(l, r, pos))
-          case _                              => fail()
+          case (a: Val.Num, b: Val.Num) => NumberMath.mod(pos, a, b)
+          case (Val.Str(_, l), r)       => Val.Str(pos, Format.format(l, r, pos))
+          case _                        => fail()
         }
 
       case Expr.BinaryOp.OP_< =>
         (l, r) match {
           case (Val.Str(_, l), Val.Str(_, r)) =>
             Val.bool(pos, Util.compareStringsByCodepoint(l, r) < 0)
-          case (Val.Num(_, l), Val.Num(_, r)) => Val.bool(pos, l < r)
-          case (x: Val.Arr, y: Val.Arr)       => Val.bool(pos, compare(x, y) < 0)
-          case _                              => fail()
+          case (a: Val.Num, b: Val.Num) => Val.bool(pos, NumberMath.compareTo(a, b) < 0)
+          case (x: Val.Arr, y: Val.Arr) => Val.bool(pos, compare(x, y) < 0)
+          case _                        => fail()
         }
 
       case Expr.BinaryOp.OP_> =>
         (l, r) match {
           case (Val.Str(_, l), Val.Str(_, r)) =>
             Val.bool(pos, Util.compareStringsByCodepoint(l, r) > 0)
-          case (Val.Num(_, l), Val.Num(_, r)) => Val.bool(pos, l > r)
-          case (x: Val.Arr, y: Val.Arr)       => Val.bool(pos, compare(x, y) > 0)
-          case _                              => fail()
+          case (a: Val.Num, b: Val.Num) => Val.bool(pos, NumberMath.compareTo(a, b) > 0)
+          case (x: Val.Arr, y: Val.Arr) => Val.bool(pos, compare(x, y) > 0)
+          case _                        => fail()
         }
 
       case Expr.BinaryOp.OP_<= =>
         (l, r) match {
           case (Val.Str(_, l), Val.Str(_, r)) =>
             Val.bool(pos, Util.compareStringsByCodepoint(l, r) <= 0)
-          case (Val.Num(_, l), Val.Num(_, r)) => Val.bool(pos, l <= r)
-          case (x: Val.Arr, y: Val.Arr)       => Val.bool(pos, compare(x, y) <= 0)
-          case _                              => fail()
+          case (a: Val.Num, b: Val.Num) => Val.bool(pos, NumberMath.compareTo(a, b) <= 0)
+          case (x: Val.Arr, y: Val.Arr) => Val.bool(pos, compare(x, y) <= 0)
+          case _                        => fail()
         }
 
       case Expr.BinaryOp.OP_>= =>
         (l, r) match {
           case (Val.Str(_, l), Val.Str(_, r)) =>
             Val.bool(pos, Util.compareStringsByCodepoint(l, r) >= 0)
-          case (Val.Num(_, l), Val.Num(_, r)) => Val.bool(pos, l >= r)
-          case (x: Val.Arr, y: Val.Arr)       => Val.bool(pos, compare(x, y) >= 0)
-          case _                              => fail()
+          case (a: Val.Num, b: Val.Num) => Val.bool(pos, NumberMath.compareTo(a, b) >= 0)
+          case (x: Val.Arr, y: Val.Arr) => Val.bool(pos, compare(x, y) >= 0)
+          case _                        => fail()
         }
 
       case Expr.BinaryOp.OP_<< =>
@@ -573,7 +583,7 @@ class Evaluator(
             if (rr >= 1 && ll >= (1L << (63 - rr)))
               Error.fail("numeric value outside safe integer range for bitwise operation", pos)
             else
-              Val.Num(pos, (ll << rr).toDouble)
+              Val.Num(pos, ll << rr)
           case _ => fail()
         }
 
@@ -585,7 +595,7 @@ class Evaluator(
             if (rr < 0) {
               Error.fail("shift by negative exponent", pos)
             }
-            Val.Num(pos, (ll >> rr).toDouble)
+            Val.Num(pos, ll >> rr)
           case _ => fail()
         }
 
@@ -598,21 +608,21 @@ class Evaluator(
       case Expr.BinaryOp.OP_& =>
         (l, r) match {
           case (l: Val.Num, r: Val.Num) =>
-            Val.Num(pos, (l.asSafeLong & r.asSafeLong).toDouble)
+            Val.Num(pos, l.asSafeLong & r.asSafeLong)
           case _ => fail()
         }
 
       case Expr.BinaryOp.OP_^ =>
         (l, r) match {
           case (l: Val.Num, r: Val.Num) =>
-            Val.Num(pos, (l.asLong ^ r.asLong).toDouble)
+            Val.Num(pos, l.asSafeLong ^ r.asSafeLong)
           case _ => fail()
         }
 
       case Expr.BinaryOp.OP_| =>
         (l, r) match {
           case (l: Val.Num, r: Val.Num) =>
-            Val.Num(pos, (l.asLong | r.asLong).toDouble)
+            Val.Num(pos, l.asSafeLong | r.asSafeLong)
           case _ => fail()
         }
 
@@ -859,7 +869,7 @@ class Evaluator(
 
   def compare(x: Val, y: Val): Int = (x, y) match {
     case (_: Val.Null, _: Val.Null) => 0
-    case (x: Val.Num, y: Val.Num)   => x.asDouble.compareTo(y.asDouble)
+    case (x: Val.Num, y: Val.Num)   => NumberMath.compareTo(x, y)
     case (x: Val.Str, y: Val.Str)   => Util.compareStringsByCodepoint(x.value, y.value)
     case (x: Val.Bool, y: Val.Bool) => x.asBoolean.compareTo(y.asBoolean)
     case (x: Val.Arr, y: Val.Arr)   =>
@@ -885,7 +895,7 @@ class Evaluator(
       }
     case x: Val.Num =>
       y match {
-        case y: Val.Num => x.asDouble == y.asDouble
+        case y: Val.Num => NumberMath.compareTo(x, y) == 0
         case _          => false
       }
     case x: Val.Arr =>
