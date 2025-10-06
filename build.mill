@@ -33,12 +33,13 @@ trait SjsonnetPublishModule extends PublishModule {
 
   def pomSettings = PomSettings(
     description = artifactName(),
-    organization = "com.databricks",
-    url = "https://github.com/databricks/sjsonnet",
+    organization = "io.github.jam01",
+    url = "https://github.com/jam01/sjsonnet",
     licenses = Seq(License.MIT),
-    versionControl = VersionControl.github("databricks", "sjsonnet"),
+    versionControl = VersionControl.github("jam01", "sjsonnet"),
     developers = Seq(
-      Developer("lihaoyi", "Li Haoyi", "https://github.com/lihaoyi")
+      Developer("lihaoyi", "Li Haoyi", "https://github.com/lihaoyi"),
+      Developer("jam01", "Jose Montoya", "https://github.com/jam01")
     )
   )
 }
