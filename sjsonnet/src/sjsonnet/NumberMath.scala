@@ -2,8 +2,6 @@ package sjsonnet
 
 import sjsonnet.Val.{Int64, Float64, Dec128}
 
-import java.math.MathContext
-
 // PERF: Consider demoting resulting numbers
 object NumberMath {
   private[sjsonnet] def allowFloat64LiteralWithIndexes(
@@ -77,7 +75,6 @@ object NumberMath {
         case x: Long       => Val.Int64(pos, x)
         case x: Double     => Val.Float64(pos, x)
         case x: BigDecimal => Val.Dec128(pos, x)
-        case x: BigInt     => Val.Dec128(pos, BigDecimal(x, MathContext.DECIMAL128))
     } catch {
       case e: ArithmeticException      => Error.fail(e.getMessage, pos)
       case e: IllegalArgumentException => Error.fail(e.getMessage, pos)
@@ -87,7 +84,7 @@ object NumberMath {
   private def add(a: Val.Num, b: Val.Num): Any = (a, b) match {
     case (Int64(_, x), Int64(_, y)) =>
       try { Math.addExact(x, y) }
-      catch { case _: ArithmeticException => BigInt(x) + BigInt(y) }
+      catch { case _: ArithmeticException => BigDecimal.decimal(x) + BigDecimal.decimal(y) }
     case (Int64(_, x), Float64(_, y)) => BigDecimal.decimal(x) + BigDecimal.decimal(y)
     case (Int64(_, x), Dec128(_, y))  => BigDecimal.decimal(x) + y // Promote to BigDecimal
 
@@ -143,7 +140,7 @@ object NumberMath {
   private def subtract(a: Val.Num, b: Val.Num): Any = (a, b) match {
     case (Int64(_, x), Int64(_, y)) =>
       try { Math.subtractExact(x, y) }
-      catch { case _: ArithmeticException => BigInt(x) - BigInt(y) }
+      catch { case _: ArithmeticException => BigDecimal.decimal(x) - BigDecimal.decimal(y) }
     case (Int64(_, x), Float64(_, y)) => BigDecimal.decimal(x) - BigDecimal.decimal(y)
     case (Int64(_, x), Dec128(_, y))  => BigDecimal.decimal(x) - y
 
@@ -171,7 +168,7 @@ object NumberMath {
   private def multiply(a: Val.Num, b: Val.Num): Any = (a, b) match {
     case (Int64(_, x), Int64(_, y)) =>
       try { Math.multiplyExact(x, y) }
-      catch { case _: ArithmeticException => BigInt(x) * BigInt(y) }
+      catch { case _: ArithmeticException => BigDecimal.decimal(x) * BigDecimal.decimal(y) }
     case (Int64(_, x), Float64(_, y)) => BigDecimal.decimal(x) * BigDecimal.decimal(y)
     case (Int64(_, x), Dec128(_, y))  => BigDecimal.decimal(x) * y
 
