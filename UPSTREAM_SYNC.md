@@ -230,7 +230,51 @@ The rationale for the numeric entries lives in `madr-better-nums.md`; this is th
 | `Interpreter.interpret` | Returns `ujson.Value`, whose numbers are `Double` — so the convenience overload **narrows**, yielding `Infinity` for out-of-range values and rounding past 2^53 | Not fixable without changing ujson. Use `interpret0(txt, path, visitor)` with a Dec128-aware visitor; that is what xtrasonnet does. |
 | Test harness | 10 goldens skip-listed in `FileTests.scala` because `ujson.Value` cannot express their result | Their goldens are left at upstream's text so a sync drops in clean. Coverage moved to `new_test_suite/decimal_semantics.jsonnet`, which asserts on rendered strings. |
 | Scala Native 2.13 | `-0` produced by arithmetic renders `0`; 2 unit tests + 9 goldens fail on that target only | Toolchain quirk in `NumberMath.signZero`'s `-0.0` literal. Not fixed: the fork targets xtrasonnet (JVM). `Math.copySign(0.0, -1.0)` is the fix if ever needed. |
-| Performance | Upstream's raw-`Double` arithmetic fast paths were removed; all arithmetic routes through `NumberMath` | Correctness by default. The `sjsonnet.floatAsBigDecimal` opt-out is representation-only and, being a system property, is JVM-global — it cannot be scoped per transformer, which is why it is not the answer for mixed workloads. |
+| Performance | Upstream's raw-`Double` arithmetic fast paths were removed; all arithmetic routes through `NumberMath`. Measured at ~1.0–1.25× of upstream on the regression suite, with one unexplained outlier — see below | Correctness by default. The `sjsonnet.floatAsBigDecimal` opt-out is representation-only and, being a system property, is JVM-global — it cannot be scoped per transformer, which is why it is not the answer for mixed workloads. |
+
+### Measured performance
+
+`./mill bench.runRegressions` against `48ff3b5a` (the commit before the numeric rework), both
+checkouts alternated over three rounds on one machine, taking **min-of-3** per case — minimum
+rather than mean or median, because external load only ever adds time, and two of six rounds in
+one run were visibly contaminated by it. Two cases untouched by the rework held at 1.00–1.03×,
+which is what says the method is sound; single-shot A/B runs were unusable and their numbers
+should not be quoted.
+
+| case | ratio vs upstream |
+|---|---|
+| `jdk17_suite/repeat_format`, `go_suite/manifestJsonEx`, `cpp_suite/realistic2` (controls) | 0.98–1.03× |
+| `lazy_array_slice_remove`, `lazy_array_comprehension`, `bench.02` | 1.05–1.08× |
+| `lazy_array_reverse_sparse`, `lazy_array_sparse_indexing` | 1.07–1.11× |
+| `array_copy_views` | 1.22× |
+| **`cpp_suite/bench.06`** | **~7.3×** |
+
+**`bench.06` is an open loose end.** 0.41 ms → 3.0 ms, `std.sort`-dominated (sorts of
+`std.range`, a `keyF` sort, and an `assertEqual` of `std.floor` output against sorted range
+output). It is not caused by `Int64` representation or by mixed-representation comparison — both
+were tried and neither moved it. Its components could not be reproduced outside JMH, because a
+cold-start probe is JVM-startup dominated while JMH measures steady state, so root-causing it
+needs JMH-level profiling. Whoever picks this up: start at `SetModule`'s primitive-array sort
+gating and `compareDefaultSetKeys`.
+
+### Replaying the numeric patch: where the conflicts are
+
+The numeric rework is the fork's largest patch (~2 900 lines over 41 files vs `0.7.3`). Ordered by
+how much trouble each file gives on replay:
+
+| File | What to expect |
+|---|---|
+| `Evaluator.scala` | Worst. Upstream keeps adding raw-`Double` fast paths; ours routes arithmetic through `NumberMath` and deleted the comprehension arithmetic pipeline. Any new upstream fast path needs the same treatment: comparisons and bitwise/shift may stay raw, arithmetic may not. |
+| `Val.scala` | The `Int64`/`Float64`/`Dec128` split plus two 256-entry pools. Upstream's `cachedNum` call sites are the hazard — a new one on an integral value silently costs `BigDecimal` promotion later. |
+| `StaticOptimizer.scala` | The constant folder must fold through `NumberMath`'s `try*` variants, or a folded chain disagrees with the evaluator. |
+| `Parser.scala` | Number-literal grammar. Underscore stripping must happen *before* `Val.Num` sees the text, or `decIndex`/`expIndex` are wrong. |
+| `Materializer.scala` | Six numeric dispatch sites, plus `RangeArr`/`ByteArr` compact paths that write raw `Double` deliberately. |
+| `Renderer.scala` + the four renderers | `renderNum`/`renderDec128`/`truncatedNumDigits`. Mostly additive. |
+| `SetModule` / `StringModule` / `TypeModule` | The only `std` files we diverge in, and only where the floor requires it. |
+| `Format.scala` | `%s` and the integer conversions. Upstream churns this file heavily. |
+| `ByteRenderer.scala` | Has its own fused `materializeDirect` that bypasses the visitor entirely — easy to miss, and it is the CLI's default path. |
+
+`NumberMath.scala` and `JsonVisitor.scala` are ours alone and never conflict.
 
 ### Deliberately not done
 

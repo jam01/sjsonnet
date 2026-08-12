@@ -156,6 +156,45 @@ Rationale:
 
    * Rejected: makes libraries harder to reason about and compose.
 
+### Tried during implementation and reverted
+
+Recorded so they are not attempted again. Each looked reasonable and is wrong.
+
+1. **Guard `Dec128` to finite-`Double` magnitude**, to keep `error.overflow*` / `div4` / `inf_*`
+   passing unchanged. This makes `Dec128` "a double with extra digits". Its exponent range
+   (~1e±6144) being far wider than binary64's is the entire point; overflow at binary64 boundaries
+   is precisely the behaviour the rework exists to remove.
+2. **Keep the raw-`Double` fast path when both operands are `Float64`.** `BigDecimal.decimal(d)`
+   reinterprets a double as its shortest round-tripping decimal, so promotion changes the *answer*,
+   not just the mantissa width: `0.1 + 0.2` is `0.30000000000000004` raw and `0.3` promoted. `%` is
+   the trap — IEEE `fmod` is binary-exact and so looks safe, yet `0.3 % 0.1` is
+   `0.09999999999999998` raw and `0` promoted. Only comparison and bitwise/shift may stay raw.
+3. **Gate the comprehension accelerator on element type** (statically, or by checking the first
+   element at runtime). Neither helps, because the mismatch is not the element type:
+   `[x / 3 for x in std.range(...)]` differs between raw-`Double` and `NumberMath` whatever the
+   elements are. The arithmetic pipeline was removed instead.
+4. **A compatibility `Val.Num.unapply` returning `(pos, Double)`**, to keep the tree compiling
+   during the split. It would have silently routed `Int64 op Int64` through `Double` at ~32 sites
+   including the constant folder, where a wrong-but-plausible fold looks like success. The compile
+   errors were the worklist.
+5. **`Val.Float64` rejecting NaN at construction.** Upstream rejects only infinity there and NaN
+   lazily in `asDouble`; moving the check earlier changes both the message and its position.
+6. **Assuming mixed-representation comparison dominated `cpp_suite/bench.06`.** A `Long` fast path
+   for `Int64`↔whole-`Float64` comparison was added and measured: no effect. The fast path was kept
+   on its own merits (allocation-free, provably equivalent); the benchmark remains unexplained. See
+   `UPSTREAM_SYNC.md` → "Measured performance".
+
 ## Notes
 
 This design intentionally favors correctness by default while preserving an escape hatch for performance-critical workloads.
+
+Two implementation invariants are easy to half-finish and worth restating, because both were found
+broken after the fact:
+
+* **Exact integers must be `Int64`, not `Float64`.** `Float64` is lossless for a value like a range
+  index, but the moment one meets an integer literal `NumberMath` promotes the pair to `BigDecimal`.
+  `std.range` elements, map-callback indices, `ByteArr` bytes and `std.count`/`std.find` results
+  were all `Float64` initially, which cost 2.4–12× on array workloads.
+* **Every number-to-string spelling must share `RenderUtils.renderNum`** — `std.toString`, `%s`,
+  `%(key)s`, and `+` concatenation. Each has its own fast path, and three of the four were found
+  narrowing independently.
