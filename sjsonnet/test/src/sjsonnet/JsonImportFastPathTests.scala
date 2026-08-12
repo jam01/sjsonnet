@@ -27,6 +27,14 @@ object JsonImportFastPathTests extends TestSuite {
       settings: Settings = Settings.default): Either[String, ujson.Value] =
     interpreter(files, settings).interpret(code, DummyPath("root", "main.jsonnet"))
 
+  /** Evaluate and render to JSON text, bypassing `ujson.Value`'s Double-backed number storage. */
+  private def renderJson(files: Map[String, String], code: String): String =
+    interpreter(files, Settings.default)
+      .interpret0(code, DummyPath("root", "main.jsonnet"), new Renderer()) match {
+      case Right(w)  => w.toString
+      case Left(err) => throw new Exception(err)
+    }
+
   private def assertSorted(keys: Array[String]): Unit = {
     var i = 1
     while (i < keys.length) {
@@ -116,19 +124,25 @@ object JsonImportFastPathTests extends TestSuite {
     test("large integer json numbers keep Jsonnet double semantics") {
       val files = Map("large-int.json" -> """{"n":18446744073709551615}""")
 
+      // The imported value is exact internally (see the next test); it is `interpret`'s
+      // ujson.Value result that narrows it to a Double.
       eval(files, """import "large-int.json"""") ==>
       Right(ujson.Obj("n" -> 1.8446744073709552e19))
     }
 
-    test("non-finite json numbers keep Jsonnet parser errors") {
-      val files = Map("overflow.json" -> """{"n":1e10000}""")
+    test("json numbers outside double range import exactly") {
+      // 1e10000 used to be rejected by the Jsonnet parser with "finite number required". Since
+      // the numeric rework it is a valid Dec128: the import path (ValVisitor) is exact, and so
+      // is rendering.
+      //
+      // Rendered rather than compared as a ujson.Value, which stores numbers as Doubles and so
+      // would report Infinity for `n` and a rounded double for `m`.
+      val files = Map(
+        "big.json" -> """{"n":1e10000,"m":18446744073709551615,"p":0.1}"""
+      )
 
-      val result = eval(files, """import "overflow.json"""")
-      assert(result.isLeft)
-      result match {
-        case Left(error) => assert(error.contains("finite number required"))
-        case Right(_)    => assert(false)
-      }
+      renderJson(files, """import "big.json"""") ==>
+      """{"m": 18446744073709551615, "n": 1e+10000, "p": 0.1}"""
     }
 
     test("incomplete json falls back to normal parse errors") {

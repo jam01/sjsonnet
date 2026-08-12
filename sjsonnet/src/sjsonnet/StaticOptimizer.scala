@@ -4,7 +4,6 @@ import scala.annotation.switch
 import scala.collection.mutable
 
 import Expr.*
-import Evaluator.SafeDoubleOps
 import ScopedExprTransform.*
 
 /**
@@ -38,8 +37,10 @@ class StaticOptimizer(
     // This avoids intermediate Val.Num + BinaryOp allocations for chains like `60 * 60 * 24`.
     _e match {
       case _: BinaryOp | _: UnaryOp =>
-        val d = tryFoldAsDouble(_e)
-        if (!d.isNaN) return Val.Num(_e.pos, d)
+        val n = tryFoldAsNum(_e)
+        // withPos: the fold may return an operand literal unchanged (unary `+`), and mutating a
+        // shared AST literal's position in place would corrupt every other use of it.
+        if (n != null) return Val.Num.withPos(_e.pos, n)
       case _ =>
     }
     super.transform(check(_e)) match {
@@ -173,61 +174,57 @@ class StaticOptimizer(
   }
 
   /**
-   * Try to fold a pure constant numeric expression chain as a raw double, bypassing the bottom-up
-   * tree transformer. Only handles trees of BinaryOp/UnaryOp/Val.Num with numeric-only ops.
+   * Try to fold a pure constant numeric expression chain, bypassing the bottom-up tree transformer.
+   * Only handles trees of BinaryOp/UnaryOp/Val.Num with numeric-only ops.
    *
-   * Returns `NaN` if the expression cannot be folded (non-numeric leaf, polymorphic op, error).
+   * Returns `null` if the expression cannot be folded (non-numeric leaf, polymorphic op, error).
    * This avoids intermediate `Val.Num` and `BinaryOp` allocations in chains like `60 * 60 * 24`.
+   *
+   * Folds through [[NumberMath]] rather than raw doubles so a folded chain is bit-for-bit what the
+   * evaluator would have produced at runtime; the `try*` entry points return null instead of
+   * raising, deferring any failure to runtime as before.
    */
-  private def tryFoldAsDouble(e: Expr): Double =
+  private def tryFoldAsNum(e: Expr): Val.Num =
     try {
       e match {
-        case Val.Num(_, n)               => n
+        case n: Val.Num                  => n
         case BinaryOp(pos, lhs, op, rhs) =>
-          val l = tryFoldAsDouble(lhs)
-          if (l.isNaN) return Double.NaN
-          val r = tryFoldAsDouble(rhs)
-          if (r.isNaN) return Double.NaN
+          val l = tryFoldAsNum(lhs)
+          if (l == null) return null
+          val r = tryFoldAsNum(rhs)
+          if (r == null) return null
           (op: @switch) match {
-            case BinaryOp.OP_+ =>
-              val res = l + r; if (res.isInfinite) return Double.NaN; res
-            case BinaryOp.OP_- =>
-              val res = l - r; if (res.isInfinite) return Double.NaN; res
-            case BinaryOp.OP_* =>
-              val res = l * r; if (res.isInfinite) return Double.NaN; res
-            case BinaryOp.OP_/ =>
-              if (r == 0) return Double.NaN
-              val res = l / r; if (res.isInfinite) return Double.NaN; res
-            case BinaryOp.OP_%  => if (r == 0) return Double.NaN; l % r
+            case BinaryOp.OP_+  => NumberMath.tryAdd(pos, l, r)
+            case BinaryOp.OP_-  => NumberMath.trySubtract(pos, l, r)
+            case BinaryOp.OP_*  => NumberMath.tryMultiply(pos, l, r)
+            case BinaryOp.OP_/  => NumberMath.tryDivide(pos, l, r)
+            case BinaryOp.OP_%  => NumberMath.tryMod(pos, l, r)
             case BinaryOp.OP_<< =>
-              val ll = l.toSafeLong(pos)(ev); val rr = r.toSafeLong(pos)(ev)
-              if (rr < 0) return Double.NaN
-              if (rr >= 1 && math.abs(ll) >= (1L << (63 - rr))) return Double.NaN
-              (ll << rr).toDouble
+              val ll = l.asSafeLong; val rr = r.asSafeLong
+              if (rr < 0) return null
+              if (rr >= 1 && math.abs(ll) >= (1L << (63 - rr))) return null
+              Val.Int64(pos, ll << rr)
             case BinaryOp.OP_>> =>
-              val ll = l.toSafeLong(pos)(ev); val rr = r.toSafeLong(pos)(ev)
-              if (rr < 0) return Double.NaN
-              (ll >> rr).toDouble
-            case BinaryOp.OP_& =>
-              (l.toSafeLong(pos)(ev) & r.toSafeLong(pos)(ev)).toDouble
-            case BinaryOp.OP_^ =>
-              (l.toSafeLong(pos)(ev) ^ r.toSafeLong(pos)(ev)).toDouble
-            case BinaryOp.OP_| =>
-              (l.toSafeLong(pos)(ev) | r.toSafeLong(pos)(ev)).toDouble
-            case _ => Double.NaN // non-numeric op (comparison, equality, etc.)
+              val ll = l.asSafeLong; val rr = r.asSafeLong
+              if (rr < 0) return null
+              Val.Int64(pos, ll >> rr)
+            case BinaryOp.OP_& => Val.Int64(pos, l.asSafeLong & r.asSafeLong)
+            case BinaryOp.OP_^ => Val.Int64(pos, l.asSafeLong ^ r.asSafeLong)
+            case BinaryOp.OP_| => Val.Int64(pos, l.asSafeLong | r.asSafeLong)
+            case _             => null // non-numeric op (comparison, equality, etc.)
           }
         case UnaryOp(pos, op, v) =>
-          val d = tryFoldAsDouble(v)
-          if (d.isNaN) return Double.NaN
+          val n = tryFoldAsNum(v)
+          if (n == null) return null
           (op: @switch) match {
-            case Expr.UnaryOp.OP_- => -d
-            case Expr.UnaryOp.OP_+ => d
-            case Expr.UnaryOp.OP_~ => (~d.toSafeLong(pos)(ev)).toDouble
-            case _                 => Double.NaN
+            case Expr.UnaryOp.OP_- => NumberMath.tryNegate(pos, n)
+            case Expr.UnaryOp.OP_+ => n
+            case Expr.UnaryOp.OP_~ => Val.Int64(pos, ~n.asSafeLong)
+            case _                 => null
           }
-        case _ => Double.NaN
+        case _ => null
       }
-    } catch { case _: Exception => Double.NaN }
+    } catch { case _: Exception => null }
 
   /**
    * Statically classify a unary function as identity-equivalent so the runtime fast path can elide
@@ -440,6 +437,9 @@ class StaticOptimizer(
     target
   }
 
+  @inline private def orFallback(folded: Val.Num, fallback: Expr): Expr =
+    if (folded == null) fallback else folded
+
   private def tryFoldUnaryOp(pos: Position, op: Int, v: Val, fallback: Expr): Expr =
     try {
       (op: @switch) match {
@@ -451,17 +451,19 @@ class StaticOptimizer(
           }
         case Expr.UnaryOp.OP_- =>
           v match {
-            case Val.Num(_, n) => Val.Num(pos, -n)
-            case _             => fallback
+            case n: Val.Num =>
+              val folded = NumberMath.tryNegate(pos, n)
+              if (folded == null) fallback else folded
+            case _ => fallback
           }
         case Expr.UnaryOp.OP_~ =>
           v match {
-            case n: Val.Num => Val.Num(pos, (~n.asSafeLong).toDouble)
+            case n: Val.Num => Val.Int64(pos, ~n.asSafeLong)
             case _          => fallback
           }
         case Expr.UnaryOp.OP_+ =>
           v match {
-            case n: Val.Num => Val.Num(pos, n.asDouble)
+            case n: Val.Num => Val.Num.withPos(pos, n)
             case _          => fallback
           }
         case _ => fallback
@@ -473,30 +475,30 @@ class StaticOptimizer(
       (op: @switch) match {
         case BinaryOp.OP_+ =>
           (lhs, rhs) match {
-            case (Val.Num(_, l), Val.Num(_, r)) => Val.Num(pos, l + r)
+            case (l: Val.Num, r: Val.Num) => orFallback(NumberMath.tryAdd(pos, l, r), fallback)
             case (Val.Str(_, l), Val.Str(_, r)) => Val.Str(pos, l + r)
             case (l: Val.Arr, r: Val.Arr)       => Val.Arr(pos, l.concat(pos, r).asStrictArray)
             case _                              => fallback
           }
         case BinaryOp.OP_- =>
           (lhs, rhs) match {
-            case (Val.Num(_, l), Val.Num(_, r)) => Val.Num(pos, l - r)
-            case _                              => fallback
+            case (l: Val.Num, r: Val.Num) => orFallback(NumberMath.trySubtract(pos, l, r), fallback)
+            case _                        => fallback
           }
         case BinaryOp.OP_* =>
           (lhs, rhs) match {
-            case (Val.Num(_, l), Val.Num(_, r)) => Val.Num(pos, l * r)
-            case _                              => fallback
+            case (l: Val.Num, r: Val.Num) => orFallback(NumberMath.tryMultiply(pos, l, r), fallback)
+            case _                        => fallback
           }
         case BinaryOp.OP_/ =>
           (lhs, rhs) match {
-            case (Val.Num(_, l), Val.Num(_, r)) if r != 0 => Val.Num(pos, l / r)
-            case _                                        => fallback
+            case (l: Val.Num, r: Val.Num) => orFallback(NumberMath.tryDivide(pos, l, r), fallback)
+            case _                        => fallback
           }
         case BinaryOp.OP_% =>
           (lhs, rhs) match {
-            case (Val.Num(_, l), Val.Num(_, r)) if r != 0 => Val.Num(pos, l % r)
-            case _                                        => fallback
+            case (l: Val.Num, r: Val.Num) => orFallback(NumberMath.tryMod(pos, l, r), fallback)
+            case _                        => fallback
           }
         case BinaryOp.OP_< =>
           tryFoldComparison(pos, lhs, BinaryOp.OP_<, rhs, fallback)
@@ -523,7 +525,7 @@ class StaticOptimizer(
               if (rr < 0) fallback // negative shift → runtime error
               else if (rr >= 1 && math.abs(ll) >= (1L << (63 - rr)))
                 fallback // overflow → runtime error
-              else Val.Num(pos, (ll << rr).toDouble)
+              else Val.Int64(pos, ll << rr)
             case _ => fallback
           }
         case BinaryOp.OP_>> =>
@@ -532,25 +534,25 @@ class StaticOptimizer(
               val ll = l.asSafeLong
               val rr = r.asSafeLong
               if (rr < 0) fallback // negative shift → runtime error
-              else Val.Num(pos, (ll >> rr).toDouble)
+              else Val.Int64(pos, ll >> rr)
             case _ => fallback
           }
         case BinaryOp.OP_& =>
           (lhs, rhs) match {
             case (l: Val.Num, r: Val.Num) =>
-              Val.Num(pos, (l.asSafeLong & r.asSafeLong).toDouble)
+              Val.Int64(pos, l.asSafeLong & r.asSafeLong)
             case _ => fallback
           }
         case BinaryOp.OP_^ =>
           (lhs, rhs) match {
             case (l: Val.Num, r: Val.Num) =>
-              Val.Num(pos, (l.asSafeLong ^ r.asSafeLong).toDouble)
+              Val.Int64(pos, l.asSafeLong ^ r.asSafeLong)
             case _ => fallback
           }
         case BinaryOp.OP_| =>
           (lhs, rhs) match {
             case (l: Val.Num, r: Val.Num) =>
-              Val.Num(pos, (l.asSafeLong | r.asSafeLong).toDouble)
+              Val.Int64(pos, l.asSafeLong | r.asSafeLong)
             case _ => fallback
           }
         case _ => fallback
@@ -563,15 +565,16 @@ class StaticOptimizer(
       op: Int,
       rhs: Val,
       fallback: Expr): Expr = {
-    // Use IEEE 754 operators directly for Num, not java.lang.Double.compare,
-    // because compare(-0.0, 0.0) == -1 while IEEE 754 treats -0.0 == 0.0.
+    // NumberMath.compareTo is the same ordering the evaluator uses, including its IEEE 754
+    // -0.0 == 0.0 handling. NaN operands are left unfolded so runtime decides.
     (lhs, rhs) match {
-      case (Val.Num(_, l), Val.Num(_, r)) if !l.isNaN && !r.isNaN =>
+      case (l: Val.Num, r: Val.Num) if !l.rawDouble.isNaN && !r.rawDouble.isNaN =>
+        val cmp = NumberMath.compareTo(l, r)
         val result = (op: @switch) match {
-          case BinaryOp.OP_<  => l < r
-          case BinaryOp.OP_>  => l > r
-          case BinaryOp.OP_<= => l <= r
-          case BinaryOp.OP_>= => l >= r
+          case BinaryOp.OP_<  => cmp < 0
+          case BinaryOp.OP_>  => cmp > 0
+          case BinaryOp.OP_<= => cmp <= 0
+          case BinaryOp.OP_>= => cmp >= 0
           case _              => return fallback
         }
         Val.bool(pos, result)
@@ -603,8 +606,8 @@ class StaticOptimizer(
     val result = (lhs, rhs) match {
       case (_: Val.True, _: Val.True) | (_: Val.False, _: Val.False) | (_: Val.Null, _: Val.Null) =>
         true
-      case (Val.Num(_, l), Val.Num(_, r)) if !l.isNaN && !r.isNaN =>
-        l == r
+      case (l: Val.Num, r: Val.Num) if !l.rawDouble.isNaN && !r.rawDouble.isNaN =>
+        NumberMath.compareTo(l, r) == 0
       case (Val.Str(_, l), Val.Str(_, r)) =>
         l == r
       case _ => false // different simple types are never equal

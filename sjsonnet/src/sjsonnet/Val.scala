@@ -1,5 +1,6 @@
 package sjsonnet
 
+import java.math.MathContext
 import java.util
 import sjsonnet.Expr.Member.Visibility
 import sjsonnet.Expr.Params
@@ -220,6 +221,8 @@ sealed abstract class Val extends Expr with Eval {
   def asInt: Int = failAs("Int")
   def asLong: Long = failAs("Long")
   def asDouble: Double = failAs("Number")
+  def asBigDecimal: BigDecimal = failAs("Number")
+  def asNum: Val.Num = failAs("Number")
   def asObj: Val.Obj = failAs("Object")
   def asArr: Val.Arr = failAs("Array")
   def asFunc: Val.Func = failAs("Function")
@@ -287,7 +290,25 @@ object Val {
     val arr = new Array[Num](numCacheSize)
     var i = 0
     while (i < numCacheSize) {
-      arr(i) = Num(pos, i.toDouble)
+      arr(i) = Float64(pos, i.toDouble)
+      i += 1
+    }
+    arr
+  }
+
+  /**
+   * The [[Int64]] counterpart of [[numCache]]. Integer literals and integer-valued results are
+   * [[Int64]] by default under the Int64/Float64/Dec128 model, so the hot small-integer paths need
+   * their own pool or they regress on allocation. Same size as the [[Float64]] pool.
+   *
+   * [[Dec128]] is deliberately not pooled — it is the "exact but slower" tier by design.
+   */
+  private val int64Cache: Array[Num] = {
+    val pos = new Position(null, -1)
+    val arr = new Array[Num](numCacheSize)
+    var i = 0
+    while (i < numCacheSize) {
+      arr(i) = Int64(pos, i.toLong)
       i += 1
     }
     arr
@@ -307,8 +328,19 @@ object Val {
       java.lang.Double.doubleToRawLongBits(i.toDouble) == java.lang.Double.doubleToRawLongBits(d)
     )
       numCache(i)
-    else Num(pos, d)
+    else Float64(pos, d)
   }
+
+  /**
+   * [[cachedNum]] for [[Int64]]: returns a pooled instance for 0–255, a fresh one otherwise.
+   *
+   * Deliberately a separate name rather than a `cachedNum` overload — `cachedNum(pos, someInt)`
+   * would silently re-resolve to the `Long` overload at existing call sites, changing the
+   * representation of their results without a compile error.
+   */
+  def cachedInt64(pos: Position, l: Long): Num =
+    if (l >= 0 && l < numCacheSize) int64Cache(l.toInt)
+    else Int64(pos, l)
 
   final case class True(var pos: Position) extends Bool {
     def prettyName = "boolean"
@@ -475,24 +507,168 @@ object Val {
       node
     }
   }
-  final case class Num(var pos: Position, private val num: Double) extends Literal {
+
+  /**
+   * A Jsonnet number, in one of three representations:
+   *
+   *   - [[Int64]] — exact 64-bit integer.
+   *   - [[Float64]] — IEEE-754 double; fast but inexact. An explicit opt-out from exactness.
+   *   - [[Dec128]] — `BigDecimal` at `MathContext.DECIMAL128`; exact within 34 significant digits.
+   *     This is the default for non-integer literals.
+   *
+   * See `madr-better-nums.md` for the rationale. All arithmetic across representations lives in
+   * [[NumberMath]], including the all-[[Float64]] case — see `NumberMath.promoteFloat64Arithmetic`.
+   */
+  sealed abstract class Num extends Literal {
+    def prettyName = "number"
+    private[sjsonnet] def valTag: Byte = TAG_NUM
+
+    /** Narrow to an array/string index. */
+    def asPositiveInt: Int
+
+    /**
+     * Narrow to a `Long` for bitwise ops, rejecting values outside the double-safe integer range.
+     */
+    def asSafeLong: Long
+
+    /** [[asSafeLong]], but attributing the failure to `pos` so the error carries a stack frame. */
+    final def toSafeLong(pos: Position)(implicit ev: EvalErrorScope): Long =
+      try asSafeLong
+      catch { case e: Error if e.stack.isEmpty => Error.fail(e.getMessage, pos) }
+
+    /**
+     * Access the double value without the NaN check performed by [[asDouble]]. Safe for internal
+     * comparison and equality operations where IEEE 754 NaN semantics are acceptable.
+     *
+     * Lossy for [[Int64]] magnitudes beyond 2^53 and for [[Dec128]] in general — prefer
+     * [[NumberMath]] where exactness matters.
+     */
+    def rawDouble: Double
+
+    /** True when this is any representation of zero (including `-0.0`). */
+    def isZero: Boolean
+
+    final override def asNum: Val.Num = this
+  }
+
+  object Num {
+
+    /**
+     * The same number at a different source position — used when folding rewrites an expression.
+     */
+    def withPos(pos: Position, n: Num): Num = n match {
+      case Int64(_, v)   => Int64(pos, v)
+      case Float64(_, v) => Float64(pos, v)
+      case Dec128(_, v)  => Dec128(pos, v)
+    }
+
+    def apply(pos: Position, n: Long): Num = Int64(pos, n)
+    def apply(pos: Position, n: Double): Num = Float64(pos, n)
+    def apply(pos: Position, n: BigDecimal): Num = Dec128(pos, n)
+
+    def apply(pos: Position, s: String): Num =
+      apply(pos, s, s.indexOf('.'), indexOfExponent(s))
+
+    /**
+     * `false` selects the performance opt-out described in the MADR: non-integer literals that a
+     * double can hold exactly enough (see [[NumberMath.allowFloat64LiteralWithIndexes]]) parse as
+     * [[Float64]] instead of [[Dec128]].
+     */
+    private val floatAsBigDecimal: Boolean =
+      sys.props.getOrElse("sjsonnet.floatAsBigDecimal", "true").toBoolean
+
+    /**
+     * Builds a number from its literal text. `decIndex`/`expIndex` are the offsets of `.` and
+     * `e`/`E` within `s`, or -1 when absent; `s` must already have any digit separators stripped.
+     */
+    def apply(pos: Position, s: String, decIndex: Int, expIndex: Int): Num = {
+      // Negative zero is the one value only Float64 can carry: `Long` has no signed zero and
+      // `BigDecimal` drops the sign of zero. Routing it anywhere else silently turns `-0` into `0`
+      // on output, which upstream deliberately fixed (#926).
+      if (isNegativeZeroText(s, expIndex)) Float64(pos, -0.0)
+      else if (decIndex == -1 && expIndex == -1) {
+        try Int64(pos, java.lang.Long.parseLong(s))
+        catch {
+          // Integers wider than `Long` widen to Dec128 rather than crashing (cf. #1019, which
+          // widened to Double); Dec128 keeps them exact up to 34 significant digits.
+          case _: NumberFormatException => dec128(pos, s)
+        }
+      } else if (floatAsBigDecimal) dec128(pos, s)
+      else if (NumberMath.allowFloat64LiteralWithIndexes(s, decIndex, expIndex)) {
+        val d = java.lang.Double.parseDouble(s)
+        if (d.isNaN || d.isInfinite) dec128(pos, s) else Float64(pos, d)
+      } else dec128(pos, s)
+    }
+
+    private def dec128(pos: Position, s: String): Num =
+      Dec128(pos, BigDecimal(s, MathContext.DECIMAL128))
+
+    /** Index of the exponent marker in `s`, or -1. */
+    private[sjsonnet] def indexOfExponent(s: String): Int = {
+      var i = 0
+      val len = s.length
+      while (i < len) {
+        val c = s.charAt(i)
+        if (c == 'e' || c == 'E') return i
+        i += 1
+      }
+      -1
+    }
+
+    /** True when `s` is negatively signed and its mantissa is all zeroes, e.g. `-0`, `-0.00e5`. */
+    private def isNegativeZeroText(s: String, expIndex: Int): Boolean = {
+      if (s.isEmpty || s.charAt(0) != '-') return false
+      val stop = if (expIndex >= 0) expIndex else s.length
+      var i = 1
+      if (i >= stop) return false
+      while (i < stop) {
+        val c = s.charAt(i)
+        if (c != '0' && c != '.') return false
+        i += 1
+      }
+      true
+    }
+  }
+
+  /** Exact 64-bit integer. */
+  final case class Int64(var pos: Position, num: Long) extends Num {
+    override def asInt: Int = num.toInt
+
+    override def asPositiveInt: Int = {
+      if (!num.isValidInt) {
+        Error.fail("Index value is not a valid integer")
+      }
+
+      if (num.toInt < 0) {
+        Error.fail("Index value is not a positive integer, got: " + num.toInt)
+      }
+      num.toInt
+    }
+
+    override def asLong: Long = num
+
+    override def asSafeLong: Long = {
+      if (num < DOUBLE_MIN_SAFE_INTEGER || num > DOUBLE_MAX_SAFE_INTEGER) {
+        Error.fail("Numeric value outside safe integer range for bitwise operation")
+      }
+      num
+    }
+
+    override def asDouble: Double = num.toDouble
+    override def asBigDecimal: BigDecimal = BigDecimal.decimal(num)
+    override def rawDouble: Double = num.toDouble
+    override def isZero: Boolean = num == 0
+  }
+
+  /** IEEE-754 double: the fast, inexact representation. */
+  final case class Float64(var pos: Position, num: Double) extends Num {
     if (num.isInfinite) {
       Error.fail("Overflow")
     }
 
-    def prettyName = "number"
-
-    /**
-     * Access the raw double value without NaN check. Safe for internal comparison and equality
-     * operations where IEEE 754 NaN semantics are acceptable. NaN values cannot arise from valid
-     * Jsonnet expressions (the constructor only guards against infinity, and no standard Jsonnet
-     * operator produces NaN). This is consistent with the comparison operators (OP_<, OP_>, etc.)
-     * which already extracted the raw double via case class pattern matching.
-     */
-    def rawDouble: Double = num
     override def asInt: Int = num.toInt
 
-    def asPositiveInt: Int = {
+    override def asPositiveInt: Int = {
       if (!num.isWhole || !num.isValidInt) {
         Error.fail("Index value is not a valid integer")
       }
@@ -505,7 +681,7 @@ object Val {
 
     override def asLong: Long = num.toLong
 
-    def asSafeLong: Long = {
+    override def asSafeLong: Long = {
       if (num.isInfinite || num.isNaN) {
         Error.fail("Numeric value is not finite")
       }
@@ -522,7 +698,54 @@ object Val {
       }
       num
     }
-    private[sjsonnet] def valTag: Byte = TAG_NUM
+
+    override def asBigDecimal: BigDecimal = BigDecimal.decimal(asDouble)
+    override def rawDouble: Double = num
+    override def isZero: Boolean = num == 0
+  }
+
+  /** `BigDecimal` at `MathContext.DECIMAL128`: exact within 34 significant digits. */
+  final case class Dec128(var pos: Position, num: BigDecimal) extends Num {
+    if (num.mc != MathContext.DECIMAL128) {
+      Error.fail("Value must be a BigDecimal with MathContext.DECIMAL128")
+    }
+
+    override def asInt: Int = num.toInt
+
+    override def asPositiveInt: Int = {
+      if (!num.isWhole || !num.isValidInt) {
+        Error.fail("Index value is not a valid integer")
+      }
+
+      if (num.toInt < 0) {
+        Error.fail("Index value is not a positive integer, got: " + num.toInt)
+      }
+      num.toInt
+    }
+
+    override def asLong: Long = num.toLong
+
+    override def asSafeLong: Long = {
+      if (num < DOUBLE_MIN_SAFE_INTEGER || num > DOUBLE_MAX_SAFE_INTEGER) {
+        Error.fail("Numeric value outside safe integer range for bitwise operation")
+      }
+      num.toLong
+    }
+
+    override def asDouble: Double = {
+      val d = num.toDouble // NOTE: lossy beyond 2^53 / 17 significant digits
+      if (d.isNaN) {
+        Error.fail("Not a number")
+      }
+      if (d.isInfinite) {
+        Error.fail("Overflow")
+      }
+      d
+    }
+
+    override def asBigDecimal: BigDecimal = num
+    override def rawDouble: Double = num.toDouble
+    override def isZero: Boolean = num.signum == 0
   }
 
   /**
@@ -2471,7 +2694,7 @@ object Val {
         case (_, rStr: Val.Str) =>
           Val.Str.concat(pos, Val.Str(pos, renderString(l)), rStr)
         case (lNum: Val.Num, rNum: Val.Num) =>
-          Val.Num(pos, lNum.asDouble + rNum.asDouble)
+          NumberMath.add(pos, lNum, rNum)
         case (lArr: Val.Arr, rArr: Val.Arr) =>
           lArr.concat(pos, rArr)
         case (lObj: Val.Obj, rObj: Val.Obj) =>

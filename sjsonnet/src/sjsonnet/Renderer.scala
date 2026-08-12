@@ -176,21 +176,41 @@ class PythonRenderer(out: Writer = new StringBuilderWriter(), indent: Int = -1)
         val i = d.toLong
         val abs = math.abs(d)
         if (java.lang.Double.compare(d, -0.0) == 0) {
-          visitFloat64StringParts("-0", -1, -1, index)
+          writeNumberString("-0")
         } else if (RenderUtils.isExactLongDouble(d, i) && abs < 1e16) {
           writeLongDirect(i)
         } else {
           // Non-integer double, or integer-valued double >= 1e16 (Python 3
           // repr() switches to scientific notation at 1e+16). Apply Python
           // repr()-style formatting.
-          val s = PythonRenderer.formatPythonFloat(d)
-          visitFloat64StringParts(s, s.indexOf('.'), s.indexOf('e'), index)
+          writeNumberString(PythonRenderer.formatPythonFloat(d))
         }
         flushBuffer()
     }
     flushCharBuilder()
     out
   }
+
+  /**
+   * `manifestPython` emulates CPython's *float* `repr`, which is a `Double`-domain notion — the
+   * 1e16 scientific-notation cutoff has no meaning for an exact `Int64` or `Dec128`. So both exact
+   * representations are narrowed back to `Double` and re-enter [[visitFloat64]], keeping
+   * manifestPython's output identical to what it produced before the numeric rework.
+   *
+   * Internal callers use [[writeNumberString]] instead, which is the raw character path — routing
+   * them through this override would recurse.
+   */
+  override def visitInt64(l: Long, index: Int): Writer = visitFloat64(l.toDouble, index)
+
+  override def visitFloat64StringParts(
+      s: CharSequence,
+      decIndex: Int,
+      expIndex: Int,
+      index: Int): Writer =
+    visitFloat64(s.toString.toDouble, index)
+
+  private def writeNumberString(s: String): Writer =
+    super.visitFloat64StringParts(s, s.indexOf('.'), s.indexOf('e'), -1)
 
   override def visitNull(index: Int): Writer = {
     flushBuffer()
@@ -649,6 +669,37 @@ object RenderUtils {
         .toBigInteger
         .toString
     } else formatDoubleString(d.toString)
+  }
+
+  /**
+   * Canonical text for a [[Val.Dec128]].
+   *
+   * `stripTrailingZeros` first, so that a decimal that happens to be whole (`1.5 + 0.5` carries
+   * scale 1 and spells itself `2.0`) renders as `2`, matching what the `Double` path and go-jsonnet
+   * produce. The result then goes through [[formatDoubleString]] — the same normaliser doubles use
+   * — so exact integers print in full up to the ECMAScript 1e21 fixed-notation window and use
+   * lowercase-`e` scientific spelling beyond it.
+   *
+   * That window matters more here than it does for doubles: `Dec128`'s exponent range is far wider
+   * than binary64's, so [[renderDouble]]'s habit of expanding every whole value in full would turn
+   * a literal like `1e6000` into six thousand characters of zeros. It also happens to match what
+   * go-jsonnet prints for large magnitudes.
+   */
+  def renderDec128(d: BigDecimal): String =
+    formatDoubleString(d.bigDecimal.stripTrailingZeros.toString)
+
+  /**
+   * Canonical text for any [[Val.Num]] — the string form of the same three-way dispatch
+   * `Materializer.visitNum` applies to visitors.
+   *
+   * Shared so that the two places which render a number straight to a `String` rather than through
+   * a visitor — `std.toString` and `std.format`'s `%s` — cannot drift apart from each other or from
+   * the renderers.
+   */
+  def renderNum(n: Val.Num): String = n match {
+    case Val.Int64(_, l)   => java.lang.Long.toString(l)
+    case Val.Float64(_, d) => renderDouble(d)
+    case Val.Dec128(_, d)  => renderDec128(d)
   }
 
   private final val LongUpperExclusive = 9223372036854775808.0

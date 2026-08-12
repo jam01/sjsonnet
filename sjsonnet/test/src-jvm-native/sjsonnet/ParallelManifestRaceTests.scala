@@ -481,7 +481,8 @@ object ParallelManifestRaceTests extends TestSuite {
 
       val truePos = Val.staticTrue.pos
       val falsePos = Val.staticFalse.pos
-      val cachedThree = Val.cachedNum(new Position(null, -1), 3)
+      // std.length yields an exact integer, so it draws from the Int64 pool, not the Float64 one.
+      val cachedThree = Val.cachedInt64(new Position(null, -1), 3L)
       val cachedThreePos = cachedThree.pos
       val sharedAsciiStr = Val.Str.asciiSafe(new Position(null, -1), "abc")
       val sharedAsciiStrPos = sharedAsciiStr.pos

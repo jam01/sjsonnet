@@ -148,19 +148,24 @@ class Parser(
     true
   }
 
-  private def parseSimpleUnsignedInteger(s: String): Double = {
+  /**
+   * Fast path for plain unsigned integer literals: returns the value, or -1 when `s` is not a
+   * simple integer that fits comfortably in a `Long`. The input is unsigned so a valid result is
+   * never negative, making -1 an unambiguous sentinel.
+   */
+  private def parseSimpleUnsignedInteger(s: String): Long = {
     val length = s.length
-    if (length == 0 || length > 18) return Double.NaN
+    if (length == 0 || length > 18) return -1L
 
     var value = 0L
     var i = 0
     while (i < length) {
       val digit = s.charAt(i) - '0'
-      if (digit < 0 || digit > 9) return Double.NaN
+      if (digit < 0 || digit > 9) return -1L
       value = value * 10L + digit
       i += 1
     }
-    value.toDouble
+    value
   }
 
   def number[$: P]: P[Val.Num] = P(
@@ -185,17 +190,14 @@ class Parser(
       if (hasUnderscores && !isValidNumberWithSeparators(numStr)) {
         Fail.opaque("invalid underscore placement in number")
       } else {
-        val v =
-          if (hasUnderscores) numStr.replace("_", "").toDouble
-          else {
-            val parsed = parseSimpleUnsignedInteger(numStr)
-            if (parsed.isNaN) numStr.toDouble else parsed
-          }
-        if (v.isInfinite) {
-          Fail.opaque("finite number required")
-        } else {
-          Pass(Val.Num(s._1, v))
-        }
+        // Digit separators are not part of the value: strip them before any numeric
+        // interpretation, otherwise the '.'/'e' offsets handed to Val.Num are meaningless.
+        val cleaned = if (hasUnderscores) numStr.replace("_", "") else numStr
+        // Simple unsigned integers stay on the fast path (now producing Val.Int64 directly);
+        // everything else falls through to Val.Num's own Int64/Float64/Dec128 dispatch.
+        val simple = parseSimpleUnsignedInteger(cleaned)
+        if (simple >= 0) Pass(Val.Int64(s._1, simple))
+        else Pass(Val.Num(s._1, cleaned))
       }
     }
   })

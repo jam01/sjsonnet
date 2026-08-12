@@ -29,12 +29,11 @@ abstract class Materializer {
   def stringify(v: Val)(implicit evaluator: EvalScope): String = {
     // Fast path for leaf types: avoid Renderer + StringWriter + CharBuilder allocation
     v match {
-      case Val.True(_)   => "true"
-      case Val.False(_)  => "false"
-      case Val.Null(_)   => "null"
-      case Val.Num(_, _) =>
-        RenderUtils.renderDouble(v.asDouble)
-      case _ => apply0(v, new sjsonnet.Renderer()).toString
+      case Val.True(_)  => "true"
+      case Val.False(_) => "false"
+      case Val.Null(_)  => "null"
+      case n: Val.Num   => RenderUtils.renderNum(n)
+      case _            => apply0(v, new sjsonnet.Renderer()).toString
     }
   }
 
@@ -48,6 +47,25 @@ abstract class Materializer {
    * when the visitor is a char renderer. Falls back to plain `visitString` for the ujson.Value AST
    * path and for strings that may require escaping.
    */
+  /**
+   * The single numeric dispatch, shared by every materialization path.
+   *
+   * `Dec128` has no visitor primitive that can carry it — `visitFloat64` would round a 34-digit
+   * decimal down to 17 — so it goes out through `visitFloat64StringParts`, which every renderer
+   * either writes verbatim or re-parses losslessly.
+   *
+   * NOTE: `ujson.Value` is the one visitor that cannot honour this: its AST stores numbers as
+   * `Double`, so `Materializer.apply`'s `ujson.Value` result still narrows `Int64`/`Dec128`. The
+   * renderers, which produce the actual output, do not.
+   */
+  @inline private def visitNum[T](n: Val.Num, visitor: Visitor[T, T]): T = n match {
+    case Val.Int64(_, l)   => visitor.visitInt64(l, -1)
+    case Val.Float64(_, d) => visitor.visitFloat64(d, -1)
+    case Val.Dec128(_, d)  =>
+      val str = RenderUtils.renderDec128(d)
+      visitor.visitFloat64StringParts(str, str.indexOf('.'), Val.Num.indexOfExponent(str), -1)
+  }
+
   @inline private def visitStr[T](s: Val.Str, visitor: Visitor[T, T]): T = {
     storePos(s.pos)
     if (s.isInstanceOf[Val.AsciiSafeStr]) {
@@ -66,8 +84,8 @@ abstract class Materializer {
       case s: Val.Str   => visitStr(s, visitor)
       case obj: Val.Obj =>
         materializeRecursiveObj(obj, visitor, 0, Materializer.MaterializeContext(evaluator))
-      case Val.Num(pos, _) => storePos(pos); visitor.visitFloat64(v.asDouble, -1)
-      case xs: Val.Arr     =>
+      case n: Val.Num  => storePos(n.pos); visitNum(n, visitor)
+      case xs: Val.Arr =>
         materializeRecursiveArr(xs, visitor, 0, Materializer.MaterializeContext(evaluator))
       case Val.True(pos)                    => storePos(pos); visitor.visitTrue(-1)
       case Val.False(pos)                   => storePos(pos); visitor.visitFalse(-1)
@@ -249,6 +267,10 @@ abstract class Materializer {
     storePos(xs.pos)
     // Fast paths for compact numeric arrays: skip per-element value() + type dispatch.
     xs match {
+      // SCOPED EXCEPTION to the Int64/Float64/Dec128 dispatch above: these compact arrays
+      // never construct a Val.Num at all, and every element is an exact integer by
+      // construction (range indices, byte values 0-255), so Double is lossless here
+      // rather than a hidden exactness gap. Do not thread Int64/Dec128 through them.
       case range: Val.RangeArr if range.isCompactRange =>
         val len = range.length
         val av = visitor.visitArray(len, -1)
@@ -316,7 +338,7 @@ abstract class Materializer {
         val s = childVal.asInstanceOf[Val.Str]
         visitStr(s, childVisitor)
       case 1 => // TAG_NUM
-        storePos(childVal.pos); childVisitor.visitFloat64(childVal.asDouble, -1)
+        storePos(childVal.pos); visitNum(childVal.asInstanceOf[Val.Num], childVisitor)
       case 2 => // TAG_TRUE
         storePos(childVal.pos); childVisitor.visitTrue(-1)
       case 3 => // TAG_FALSE
@@ -418,6 +440,10 @@ abstract class Materializer {
             // Fast paths for compact numeric arrays: emit all elements directly.
             if (frame.index == 0) {
               arr match {
+                // SCOPED EXCEPTION to the Int64/Float64/Dec128 dispatch above: these compact arrays
+                // never construct a Val.Num at all, and every element is an exact integer by
+                // construction (range indices, byte values 0-255), so Double is lossless here
+                // rather than a hidden exactness gap. Do not thread Int64/Dec128 through them.
                 case range: Val.RangeArr if range.isCompactRange =>
                   val len = range.length
                   var i = 0
@@ -478,9 +504,9 @@ abstract class Materializer {
         parentVisitor.visitValue(visitStr(s, childVisitor), -1)
       case obj: Val.Obj =>
         pushObjFrame(obj, childVisitor, stack, ctx)
-      case Val.Num(pos, _) =>
-        storePos(pos);
-        parentVisitor.visitValue(childVisitor.visitFloat64(childVal.asDouble, -1), -1)
+      case n: Val.Num =>
+        storePos(n.pos);
+        parentVisitor.visitValue(visitNum(n, childVisitor), -1)
       case xs: Val.Arr =>
         pushArrFrame(xs, childVisitor, stack, ctx)
       case Val.True(pos) =>
@@ -885,12 +911,12 @@ object Materializer extends Materializer {
       case Expr.UnaryOp(_, _, v)     => hasSelfRefExpr(v, inNestedObj)
       case Expr.BinaryOp(_, l, _, r) =>
         hasSelfRefExpr(l, inNestedObj) || hasSelfRefExpr(r, inNestedObj)
-      case Expr.And(_, l, r)      => hasSelfRefExpr(l, inNestedObj) || hasSelfRefExpr(r, inNestedObj)
-      case Expr.Or(_, l, r)       => hasSelfRefExpr(l, inNestedObj) || hasSelfRefExpr(r, inNestedObj)
+      case Expr.And(_, l, r) => hasSelfRefExpr(l, inNestedObj) || hasSelfRefExpr(r, inNestedObj)
+      case Expr.Or(_, l, r)  => hasSelfRefExpr(l, inNestedObj) || hasSelfRefExpr(r, inNestedObj)
       case Expr.NullCoal(_, l, r) =>
         hasSelfRefExpr(l, inNestedObj) || hasSelfRefExpr(r, inNestedObj)
       case Expr.Select(_, v, _, _) => hasSelfRefExpr(v, inNestedObj)
-      case Expr.Lookup(_, v, idx) =>
+      case Expr.Lookup(_, v, idx)  =>
         hasSelfRefExpr(v, inNestedObj) || hasSelfRefExpr(idx, inNestedObj)
       case Expr.IfElse(_, c, t, el) =>
         hasSelfRefExpr(c, inNestedObj) || hasSelfRefExpr(t, inNestedObj) || hasSelfRefExpr(

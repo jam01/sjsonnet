@@ -2,13 +2,12 @@ package sjsonnet
 
 import java.util
 
-import ujson.JsVisitor
 import upickle.core.{ArrVisitor, ObjVisitor, Visitor}
 
 import scala.collection.mutable
 
 /** Parse JSON directly into a literal `Val` */
-class ValVisitor(pos: Position) extends JsVisitor[Val, Val] { self =>
+class ValVisitor(pos: Position) extends JsonVisitor[Val, Val] { self =>
 
   override def visitJsonableObject(length: Int, index: Int): ObjVisitor[Val, Val] =
     visitObject(length, index)
@@ -41,16 +40,14 @@ class ValVisitor(pos: Position) extends JsVisitor[Val, Val] { self =>
 
   def visitTrue(index: Int): Val = Val.True(pos)
 
+  // Val.Num.apply owns the whole routing decision, including the `-0` rule that used to be
+  // special-cased here (#926) and the overflow-safe widening for integers wider than a Long (#1019).
   def visitFloat64StringParts(s: CharSequence, decIndex: Int, expIndex: Int, index: Int): Val =
-    Val.Num(
-      pos,
-      if (decIndex != -1 || expIndex != -1) s.toString.toDouble
-      else if (s.length() == 2 && s.charAt(0) == '-' && s.charAt(1) == '0') -0.0
-      else {
-        try upickle.core.ParseUtils.parseIntegralNum(s, decIndex, expIndex, index).toDouble
-        catch { case _: NumberFormatException => s.toString.toDouble }
-      }
-    )
+    Val.Num(pos, s.toString, decIndex, expIndex)
 
   def visitString(s: CharSequence, index: Int): Val = Val.Str(pos, s.toString)
+
+  override def visitInt64(l: Long, index: Int): Val = Val.Int64(pos, l)
+
+  override def visitFloat64(d: Double, index: Int): Val = Val.Float64(pos, d)
 }

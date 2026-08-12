@@ -1,0 +1,107 @@
+// Rendered-output coverage for the exact numeric core (see madr-better-nums.md).
+//
+// This file exists because `BaseFileTests.check` compares `Interpreter.interpret`'s ujson.Value
+// against the golden, and ujson stores every number as a Double. Any test whose *result* is a
+// number outside binary64's range or precision therefore cannot be checked by that harness —
+// error.overflow, error.overflow2, div4, inf_* and parseint_large_precision are skip-listed in
+// FileTests.scala for exactly that reason.
+//
+// Everything below stringifies the number inside Jsonnet and asserts on the string, so the file
+// evaluates to a boolean and survives the narrowing intact. std.toString and every renderer share
+// RenderUtils.renderNum, so these assertions pin what the CLI actually prints.
+
+// --- Decimal literals are exact, not binary64 ------------------------------------------------
+std.assertEqual(std.toString(0.1 + 0.2), "0.3") &&
+std.assertEqual(0.1 + 0.2 == 0.3, true) &&
+std.assertEqual(std.toString(0.1 * 3), "0.3") &&
+std.assertEqual(std.toString(1.1 - 1.0), "0.1") &&
+// A decimal that happens to be whole renders without its trailing scale.
+std.assertEqual(std.toString(1.5 + 0.5), "2") &&
+// Rounded at DECIMAL128's 34 significant digits.
+std.assertEqual(std.toString(1 / 3), "0.3333333333333333333333333333333333") &&
+
+// --- Values outside binary64 range are constructible and render exactly ----------------------
+// Upstream raises Overflow for all four of these; here they are ordinary Dec128 values.
+std.assertEqual(std.toString(1e308 + 1e308), "2e+308") &&
+std.assertEqual(std.toString(-1e308 - 1e308), "-2e+308") &&
+std.assertEqual(std.toString(1e300 * 1000000000), "1e+309") &&
+std.assertEqual(std.toString(1 / (1e-160) / (1e-160)), "1e+320") &&
+std.assertEqual(std.toString(1e309), "1e+309") &&
+// Small magnitudes too: go-jsonnet's binary64 artifact here is 9.9999999999999991e-31.
+std.assertEqual(std.toString(1 / 1e30), "1e-30") &&
+
+// --- Integers are exact past 2^53 ------------------------------------------------------------
+std.assertEqual(std.toString(9007199254740993), "9007199254740993") &&
+std.assertEqual(std.toString(9223372036854775807), "9223372036854775807") &&
+// Past Long range an integer literal widens to Dec128 rather than rounding to a double; this
+// used to print 9223372036854776000.
+std.assertEqual(std.toString(9223372036854775808), "9223372036854775808") &&
+// Int64 arithmetic must widen rather than wrap.
+std.assertEqual(std.toString(9223372036854775807 + 1), "9223372036854775808") &&
+// Distinct values that share a Double stay distinct.
+std.assertEqual(9007199254740993 == 9007199254740994, false) &&
+std.assertEqual(std.primitiveEquals(9007199254740993, 9007199254740994), false) &&
+std.assertEqual(std.sort([9007199254740994, 9007199254740993]),
+                [9007199254740993, 9007199254740994]) &&
+std.assertEqual(std.length(std.setUnion([9007199254740993], [9007199254740994])), 2) &&
+
+// --- parseInt / parseHex / parseOctal are exact ----------------------------------------------
+// The exactness half of parseint_large_precision, which asserts the old rounding and is
+// skip-listed because an Int64 past 2^53 comes back from `interpret` as a ujson Str.
+std.assertEqual(std.toString(std.parseInt("12345678901234567")), "12345678901234567") &&
+std.assertEqual(std.toString(std.parseInt("9007199254740993")), "9007199254740993") &&
+std.assertEqual(std.toString(std.parseInt("999999999999999999")), "999999999999999999") &&
+std.assertEqual(std.toString(std.parseInt("-999999999999999999")), "-999999999999999999") &&
+// Beyond Long range, so Dec128 — and exact, where the old code gave …616.
+std.assertEqual(std.toString(std.parseHex("FFFFFFFFFFFFFFFF")), "18446744073709551615") &&
+std.assertEqual(std.toString(std.parseOctal("1000000000000000000000")), "9223372036854775808") &&
+
+// --- Negative zero survives every path -------------------------------------------------------
+// Neither Long nor BigDecimal has a signed zero, so -0 must be carried as a Float64. Upstream
+// deliberately fixed bare `-0` rendering (#926) and this is the regression guard for it.
+std.assertEqual(std.toString(-0), "-0") &&
+std.assertEqual(std.toString(0 * -1), "-0") &&
+std.assertEqual(std.toString(-0 + -0), "-0") &&
+std.assertEqual(std.toString(0 - 0), "0") &&
+std.assertEqual(std.toString(-6 % 3), "-0") &&
+std.assertEqual(std.manifestJsonMinified({ a: -0, b: 0 }), '{"a":-0,"b":0}') &&
+std.assertEqual(std.toString(std.parseJson("-0")), "-0") &&
+// Still equal to +0, as IEEE-754 requires.
+std.assertEqual(-0 == 0, true) &&
+std.assertEqual(std.primitiveEquals(-0, 0), true) &&
+
+// --- Modulo -----------------------------------------------------------------------------------
+// Decimally correct: IEEE fmod gives 0.09999999999999998 here.
+std.assertEqual(std.toString(0.3 % 0.1), "0") &&
+// BigDecimal.remainder raises "Division impossible" once the implied quotient needs more than 34
+// digits, even though the remainder itself is trivially representable.
+std.assertEqual(std.toString(1e40 % 3), "1") &&
+std.assertEqual(std.toString(1e400 % 3), "1") &&
+std.assertEqual(std.toString(9223372036854775807 % 1000), "807") &&
+
+// --- Every number-to-string conversion agrees --------------------------------------------------
+// std.toString, `%s`, `%(key)s` and `+` concatenation all share RenderUtils.renderNum, so none of
+// them can put a different number in the output string than the others. `+` and the `%(key)s`
+// fast path both used to narrow through asDouble and spelled the first value below …776000.
+// `%(key)s` is checked twice per value because a repeated label takes a separate cached branch.
+local agree(n, expected) =
+  std.assertEqual(std.toString(n), expected) &&
+  std.assertEqual('%s' % n, expected) &&
+  std.assertEqual('%(n)s' % { n: n }, expected) &&
+  std.assertEqual('%(n)s|%(n)s' % { n: n }, expected + '|' + expected) &&
+  std.assertEqual('' + n, expected) &&
+  std.assertEqual(n + '', expected);
+agree(9223372036854775807, "9223372036854775807") &&
+agree(1e21, "1e+21") &&
+agree(1e400, "1e+400") &&
+agree(0.1 + 0.2, "0.3") &&
+agree(-0, "-0") &&
+
+// --- std.* keeps upstream's Double semantics, on purpose --------------------------------------
+// Per madr-better-nums.md, "Scope: the language core is exact; the standard library is not". The
+// operators are exact; std functions narrow. This asymmetry is the decision, not an oversight —
+// pinned here so a future change to it is deliberate rather than accidental.
+std.assertEqual(std.toString(std.sum([0.1, 0.2])), "0.30000000000000004") &&
+std.assertEqual(std.toString(0.1 + 0.2), "0.3") &&
+
+true

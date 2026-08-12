@@ -1173,15 +1173,20 @@ object EvaluatorTests extends TestSuite {
     }
 
     test("largeIntegerDoubleMaterialization") {
-      // Large whole numbers that don't fit in Long should render as decimal integers,
-      // without Java scientific notation or exact binary64 noise.
-      val expected1e100 = "1" + "0" * 100
-      val expected1e308 = "1" + "0" * 308
-      eval("""std.manifestJson(1e100)""") ==> ujson.Str(expected1e100)
-      eval("""std.manifestJson(1e308)""") ==> ujson.Str(expected1e308)
-      eval("""std.manifestToml({a: 1e100})""") ==> ujson.Str("a = " + expected1e100)
+      // Large whole numbers render without Java scientific notation ("1.0E+100") or binary64
+      // noise. Up to the 1e21 fixed-notation window they expand in full; beyond it they use
+      // sjsonnet's lowercase-'e' scientific spelling. Expanding everything is not an option
+      // since the numeric rework: these are exact Dec128 values whose exponent range far
+      // exceeds binary64's, so 1e6000 would spell out six thousand characters.
+      eval("""std.manifestJson(1e20)""") ==> ujson.Str("1" + "0" * 20)
+      eval("""std.manifestJson(1e100)""") ==> ujson.Str("1e+100")
+      eval("""std.manifestJson(1e308)""") ==> ujson.Str("1e+308")
+      eval("""std.manifestToml({a: 1e100})""") ==> ujson.Str("a = 1e+100")
+      // An integer literal past Long range is an exact Dec128, not a rounded double; it used
+      // to materialize as 9223372036854776000.
       eval("""std.manifestToml({a: 9223372036854775808})""") ==>
-        ujson.Str("a = 9223372036854776000")
+        ujson.Str("a = 9223372036854775808")
+      eval("""std.manifestJson(9223372036854775807)""") ==> ujson.Str("9223372036854775807")
     }
 
     test("assertBooleanTypeCheck") {

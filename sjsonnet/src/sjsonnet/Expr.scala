@@ -75,11 +75,11 @@ trait TailstrictableExpr extends Expr {
 
 object Expr {
   private[sjsonnet] def callTargetName(value: Expr): String = value match {
-    case ValidId(_, name, _) => name
-    case Id(_, name)         => name
+    case ValidId(_, name, _)   => name
+    case Id(_, name)           => name
     case Select(_, _, name, _) => name
-    case f: Val.Builtin      => f.qualifiedName
-    case f: Val.Func         =>
+    case f: Val.Builtin        => f.qualifiedName
+    case f: Val.Func           =>
       val n = f.functionName
       if (n != null) n else "anonymous"
     case _ => "anonymous"
@@ -378,11 +378,7 @@ object Expr {
     final override private[sjsonnet] def tag = ExprTags.Select
     override def exprErrorString: String = s"${super.exprErrorString} $name"
   }
-  final case class SelectSuper(
-      var pos: Position,
-      selfIdx: Int,
-      name: String,
-      safe: Boolean = false)
+  final case class SelectSuper(var pos: Position, selfIdx: Int, name: String, safe: Boolean = false)
       extends Expr {
     final override private[sjsonnet] def tag = ExprTags.SelectSuper
     override def exprErrorString: String = s"${super.exprErrorString} $name"

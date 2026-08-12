@@ -3,7 +3,6 @@ package sjsonnet
 // Vendored version of `ujson.BaseCharRenderer` from ujson 1.3.7
 // with some private definitions made accessible to subclasses
 
-import ujson._
 import upickle.core.{ArrVisitor, ObjVisitor, Visitor}
 
 object BaseCharRenderer {
@@ -25,7 +24,7 @@ class BaseCharRenderer[T <: upickle.core.CharOps.Output](
     escapeUnicode: Boolean = false,
     newline: Array[Char] = Array('\n'),
     indentStr: Array[Char] = null)
-    extends JsVisitor[T, T] {
+    extends JsonVisitor[T, T] {
 
   override def visitJsonableObject(length: Int, index: Int): ObjVisitor[T, T] =
     visitObject(length, index)
@@ -180,6 +179,17 @@ class BaseCharRenderer[T <: upickle.core.CharOps.Output](
       elemBuilder.appendUnsafeC(s.charAt(i))
       i += 1
     }
+    flushCharBuilder()
+    out
+  }
+
+  /**
+   * [[Val.Int64]] is the default representation for integers, so this must not inherit
+   * [[JsonVisitor]]'s generic `visitFloat64StringParts` default — that would put the single most
+   * common numeric case on the string-building slow path instead of [[FastLongRenderer]].
+   */
+  override def visitInt64(l: Long, index: Int): T = {
+    writeLongDirect(l)
     flushCharBuilder()
     out
   }

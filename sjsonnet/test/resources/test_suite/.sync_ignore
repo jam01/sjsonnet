@@ -8,3 +8,9 @@ error.std_parseYaml1.jsonnet
 # unparse.jsonnet: sjsonnet renders 1/3 as 0.3333333333333333 and 1e-14 as
 # 1.0E-14, differing from C++ jsonnet's 0.33333333333333331 and 1e-14.
 unparse.jsonnet
+# error.overflow3.jsonnet: sjsonnet's numeric core is exact (see madr-better-nums.md),
+# so 1e309 is a valid Dec128 rather than a "finite number required" parse error. The
+# expression still fails, but later and with a different message: the bitwise operand
+# check rejects it. See also error.overflow/error.overflow2, which no longer fail at
+# all and are skip-listed in FileTests.scala instead.
+error.overflow3.jsonnet

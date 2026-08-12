@@ -19,3 +19,11 @@ stdlib_smoke_test
 builtin_escapeStringJson
 builtin_manifestTomlEx
 pow6
+
+# --- Exact decimal arithmetic ---
+# sjsonnet's numeric core is exact (see madr-better-nums.md): decimal literals are
+# Dec128, not binary64, so 1/1e30 is 1e-30 rather than go-jsonnet's binary64 artifact
+# 9.9999999999999991e-31. The related div4/inf_* files, whose results fall outside
+# binary64 entirely, are skip-listed in FileTests.scala instead — their goldens are
+# deliberately left at go-jsonnet's text.
+div3

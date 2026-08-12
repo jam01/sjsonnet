@@ -4,8 +4,6 @@ import sjsonnet.Expr.Member.Visibility
 import sjsonnet.Expr.{Error as _, *}
 import ujson.Value
 
-import sjsonnet.Evaluator.SafeDoubleOps
-
 import scala.annotation.{switch, tailrec}
 import scala.util.control.NonFatal
 
@@ -201,11 +199,11 @@ class Evaluator(
       // Inline fast path for numeric arithmetic — avoids the full dispatch chain
       // (visitExpr → visitBinaryOp → visitBinaryOpAsDouble → visitExprAsDouble)
       // and the try/catch in tryEvalCatch. Covers fibonacci hot path (n-1, n-2).
-      val lDouble = resolveAsDouble(bo.lhs)
-      if (!lDouble.isNaN) {
-        val rDouble = resolveAsDouble(bo.rhs)
-        if (!rDouble.isNaN)
-          return tryInlineArith(bo.op, lDouble, rDouble, bo.pos)
+      val lNum = resolveAsNum(bo.lhs)
+      if (lNum != null) {
+        val rNum = resolveAsNum(bo.rhs)
+        if (rNum != null)
+          return tryInlineArith(bo.op, lNum, rNum, bo.pos)
       }
       if (isImmediatelyResolvable(bo.lhs) && isImmediatelyResolvable(bo.rhs))
         tryEvalCatch(bo)
@@ -217,78 +215,63 @@ class Evaluator(
   }
 
   /**
-   * Resolve an expression to a double without full visitExpr dispatch. Returns NaN as sentinel when
-   * the expression can't be directly resolved.
+   * Resolve an expression to a [[Val.Num]] without full visitExpr dispatch. Returns null as
+   * sentinel when the expression can't be directly resolved.
    */
-  @inline private def resolveAsDouble(e: Expr)(implicit scope: ValScope): Double = e match {
-    case n: Val.Num => n.rawDouble
+  @inline private def resolveAsNum(e: Expr)(implicit scope: ValScope): Val.Num = e match {
+    case n: Val.Num => n
     case v: ValidId =>
       val idx = v.nameIdx
       if (idx < scope.length) {
         val binding = scope.bindings(idx)
         if (binding != null) binding match {
-          case n: Val.Num => n.rawDouble
-          case _: Val     => Double.NaN
-          case _          => Double.NaN
+          case n: Val.Num => n
+          case _          => null
         }
-        else Double.NaN
-      } else Double.NaN
-    case _ => Double.NaN
+        else null
+      } else null
+    case _ => null
   }
 
   /**
    * Perform inline numeric binary op, returning null on error or unsupported op. Covers arithmetic,
    * comparison, and bitwise operators. Returns null (fallback to LazyExpr) for: overflow, division
    * by zero, out-of-range bitwise operands, OP_in (string+object), OP_&&/OP_|| (short-circuit).
+   *
+   * Any failure is swallowed into null rather than raised: this runs eagerly on operands that may
+   * belong to an unused lazy argument, so the error must stay deferred to real evaluation.
    */
-  @inline private def tryInlineArith(op: Int, ld: Double, rd: Double, pos: Position): Val =
-    (op: @switch) match {
-      case Expr.BinaryOp.OP_* =>
-        val r = ld * rd; if (r.isNaN || r.isInfinite) null else Val.cachedNum(pos, r)
-      case Expr.BinaryOp.OP_/ =>
-        if (rd == 0) null
-        else { val r = ld / rd; if (r.isNaN || r.isInfinite) null else Val.cachedNum(pos, r) }
-      case Expr.BinaryOp.OP_% =>
-        if (rd == 0) null
-        else { val r = ld % rd; if (r.isNaN) null else Val.cachedNum(pos, r) }
-      case Expr.BinaryOp.OP_+ =>
-        val r = ld + rd; if (r.isNaN || r.isInfinite) null else Val.cachedNum(pos, r)
-      case Expr.BinaryOp.OP_- =>
-        val r = ld - rd; if (r.isNaN || r.isInfinite) null else Val.cachedNum(pos, r)
-      case Expr.BinaryOp.OP_<< =>
-        val ll = ld.toLong; val rl = rd.toLong
-        if (ll.toDouble != ld || rl.toDouble != rd) null // not safe integers
-        else if (rl < 0) null
-        else {
-          val masked = (rl % 64).toInt
-          if (masked >= 1 && math.abs(ll) >= (1L << (63 - masked))) null
-          else Val.cachedNum(pos, (ll << masked).toDouble)
-        }
-      case Expr.BinaryOp.OP_>> =>
-        val ll = ld.toLong; val rl = rd.toLong
-        if (ll.toDouble != ld || rl.toDouble != rd) null
-        else if (rl < 0) null
-        else Val.cachedNum(pos, (ll >> rl).toDouble)
-      case Expr.BinaryOp.OP_<  => Val.bool(ld < rd)
-      case Expr.BinaryOp.OP_>  => Val.bool(ld > rd)
-      case Expr.BinaryOp.OP_<= => Val.bool(ld <= rd)
-      case Expr.BinaryOp.OP_>= => Val.bool(ld >= rd)
-      case Expr.BinaryOp.OP_== => Val.bool(ld == rd)
-      case Expr.BinaryOp.OP_!= => Val.bool(ld != rd)
-      case Expr.BinaryOp.OP_&  =>
-        val ll = ld.toLong; val rl = rd.toLong
-        if (ll.toDouble != ld || rl.toDouble != rd) null
-        else Val.cachedNum(pos, (ll & rl).toDouble)
-      case Expr.BinaryOp.OP_^ =>
-        val ll = ld.toLong; val rl = rd.toLong
-        if (ll.toDouble != ld || rl.toDouble != rd) null
-        else Val.cachedNum(pos, (ll ^ rl).toDouble)
-      case Expr.BinaryOp.OP_| =>
-        val ll = ld.toLong; val rl = rd.toLong
-        if (ll.toDouble != ld || rl.toDouble != rd) null
-        else Val.cachedNum(pos, (ll | rl).toDouble)
-      case _ => null // OP_in (string+object), OP_&&/OP_|| (short-circuit)
-    }
+  private def tryInlineArith(op: Int, l: Val.Num, r: Val.Num, pos: Position): Val =
+    try {
+      (op: @switch) match {
+        case Expr.BinaryOp.OP_*  => NumberMath.multiply(pos, l, r)
+        case Expr.BinaryOp.OP_/  => NumberMath.divide(pos, l, r)
+        case Expr.BinaryOp.OP_%  => NumberMath.mod(pos, l, r)
+        case Expr.BinaryOp.OP_+  => NumberMath.add(pos, l, r)
+        case Expr.BinaryOp.OP_-  => NumberMath.subtract(pos, l, r)
+        case Expr.BinaryOp.OP_<< =>
+          val ll = l.asSafeLong; val rl = r.asSafeLong
+          if (rl < 0) null
+          else {
+            val masked = (rl % 64).toInt
+            if (masked >= 1 && math.abs(ll) >= (1L << (63 - masked))) null
+            else Val.cachedInt64(pos, ll << masked)
+          }
+        case Expr.BinaryOp.OP_>> =>
+          val ll = l.asSafeLong; val rl = r.asSafeLong
+          if (rl < 0) null else Val.cachedInt64(pos, ll >> rl)
+        case Expr.BinaryOp.OP_<  => Val.bool(NumberMath.compareTo(l, r) < 0)
+        case Expr.BinaryOp.OP_>  => Val.bool(NumberMath.compareTo(l, r) > 0)
+        case Expr.BinaryOp.OP_<= => Val.bool(NumberMath.compareTo(l, r) <= 0)
+        case Expr.BinaryOp.OP_>= => Val.bool(NumberMath.compareTo(l, r) >= 0)
+        case Expr.BinaryOp.OP_== => Val.bool(NumberMath.compareTo(l, r) == 0)
+        case Expr.BinaryOp.OP_!= => Val.bool(NumberMath.compareTo(l, r) != 0)
+        case Expr.BinaryOp.OP_&  => Val.cachedInt64(pos, l.asSafeLong & r.asSafeLong)
+        case Expr.BinaryOp.OP_^  => Val.cachedInt64(pos, l.asSafeLong ^ r.asSafeLong)
+        case Expr.BinaryOp.OP_|  => Val.cachedInt64(pos, l.asSafeLong | r.asSafeLong)
+        case _                   => null // OP_in (string+object), OP_&&/OP_|| (short-circuit)
+      }
+    } catch { case NonFatal(_) => null }
 
   /**
    * Evaluate an expression, returning null on any exception (preserving lazy error semantics for
@@ -531,38 +514,6 @@ class Evaluator(
     def eval(first: Double, second: Double): Double = second
   }
 
-  private final class PureUnaryDouble(op: Int, pos: Position, value: PureDoubleExpr)
-      extends PureDoubleExpr {
-    def eval(first: Double, second: Double): Double =
-      (op: @switch) match {
-        case Expr.UnaryOp.OP_+ => value.eval(first, second)
-        case Expr.UnaryOp.OP_- => checkedPureDouble(-value.eval(first, second), pos)
-      }
-  }
-
-  private final class PureBinaryDouble(
-      op: Int,
-      pos: Position,
-      lhs: PureDoubleExpr,
-      rhs: PureDoubleExpr)
-      extends PureDoubleExpr {
-    def eval(first: Double, second: Double): Double = {
-      val l = lhs.eval(first, second)
-      val r = rhs.eval(first, second)
-      (op: @switch) match {
-        case Expr.BinaryOp.OP_* => checkedPureDouble(l * r, pos)
-        case Expr.BinaryOp.OP_+ => checkedPureDouble(l + r, pos)
-        case Expr.BinaryOp.OP_- => checkedPureDouble(l - r, pos)
-        case Expr.BinaryOp.OP_/ =>
-          if (r == 0) Error.fail("Division by zero.", pos)(Evaluator.this)
-          checkedPureDouble(l / r, pos)
-        case Expr.BinaryOp.OP_% =>
-          if (r == 0) Error.fail("Division by zero.", pos)(Evaluator.this)
-          checkedPureDouble(l % r, pos)
-      }
-    }
-  }
-
   private def compilePureCompBody(e: Expr, firstSlot: Int, secondSlot: Int): PureCompBody =
     if (e == null) null
     else
@@ -583,6 +534,13 @@ class Evaluator(
           if (numeric == null) null else new PureDoubleBody(e.pos, numeric)
       }
 
+  /**
+   * Compiles operands of a comparison body over a [[Val.RangeArr]] into raw doubles.
+   *
+   * Safe for constants of any representation: range elements are integers, and `rawDouble` of a
+   * literal round-trips to a value with no integer strictly between it and the exact literal, so
+   * the ordering against an integral element is unchanged.
+   */
   private def compilePureDoubleExpr(e: Expr, firstSlot: Int, secondSlot: Int): PureDoubleExpr =
     e match {
       case n: Val.Num => new PureConstDouble(n.rawDouble)
@@ -590,31 +548,13 @@ class Evaluator(
         if (v.nameIdx == firstSlot) PureFirstDouble
         else if (v.nameIdx == secondSlot) PureSecondDouble
         else null
-      case u: UnaryOp if u.op == Expr.UnaryOp.OP_+ || u.op == Expr.UnaryOp.OP_- =>
-        val value = compilePureDoubleExpr(u.value, firstSlot, secondSlot)
-        if (value == null) null else new PureUnaryDouble(u.op, u.pos, value)
-      case b: BinaryOp if isPureArithmeticOp(b.op) =>
-        val lhs = compilePureDoubleExpr(b.lhs, firstSlot, secondSlot)
-        if (lhs == null) null
-        else {
-          val rhs = compilePureDoubleExpr(b.rhs, firstSlot, secondSlot)
-          if (rhs == null) null else new PureBinaryDouble(b.op, b.pos, lhs, rhs)
-        }
+      // NOTE: arithmetic (`x * 2`, `x / 3`, ...) is deliberately NOT compiled here any more.
+      // Raw `Double` arithmetic no longer reproduces what normal evaluation yields: the body's
+      // literals are Int64/Dec128 and NumberMath promotes, so `[x / 3 for x in std.range(...)]`
+      // would differ between the accelerated and the ordinary path. Re-targeting this pipeline to
+      // exact `Long` arithmetic (matching Int64) is a worthwhile perf follow-up; it needs its own
+      // overflow-fallback design, which does not belong in the correctness pass.
       case _ => null
-    }
-
-  @inline private def checkedPureDouble(value: Double, pos: Position): Double = {
-    if (value.isNaN) Error.fail("Not a number", pos)(Evaluator.this)
-    if (value.isInfinite) Error.fail("Overflow", pos)(Evaluator.this)
-    value
-  }
-
-  @inline private def isPureArithmeticOp(op: Int): Boolean =
-    (op: @switch) match {
-      case Expr.BinaryOp.OP_* | Expr.BinaryOp.OP_+ | Expr.BinaryOp.OP_- | Expr.BinaryOp.OP_/ |
-          Expr.BinaryOp.OP_% =>
-        true
-      case _ => false
     }
 
   @inline private def isPureCompareOp(op: Int): Boolean =
@@ -820,10 +760,10 @@ class Evaluator(
   def visitUnaryOp(e: UnaryOp)(implicit scope: ValScope): Val = {
     val pos = e.pos
     (e.op: @switch) match {
-      case Expr.UnaryOp.OP_+ => Val.cachedNum(pos, visitExprAsDouble(e.value))
-      case Expr.UnaryOp.OP_- => Val.cachedNum(pos, -visitExprAsDouble(e.value))
+      case Expr.UnaryOp.OP_+ => Val.Num.withPos(pos, visitExprAsNum(e.value))
+      case Expr.UnaryOp.OP_- => NumberMath.negate(pos, visitExprAsNum(e.value))
       case Expr.UnaryOp.OP_~ =>
-        Val.cachedNum(pos, (~visitExprAsDouble(e.value).toSafeLong(pos)).toDouble)
+        Val.cachedInt64(pos, ~visitExprAsNum(e.value).toSafeLong(pos))
       case Expr.UnaryOp.OP_! =>
         visitExpr(e.value) match {
           case Val.True(_)  => Val.staticFalse
@@ -838,27 +778,28 @@ class Evaluator(
   }
 
   /**
-   * Fast path: evaluate an expression expected to produce a Double, avoiding intermediate
-   * [[Val.Num]] allocation. When a numeric expression chain like `a + b * c - d` is evaluated,
-   * intermediate results stay as raw JVM `double` primitives (zero allocation) instead of being
-   * boxed into `Val.Num` objects (~24-32 bytes each) at every step.
+   * Evaluate an expression expected to produce a number, without materialising it through the
+   * generic `visitExpr` path when the operand is already a literal or a bound scope entry.
    *
-   * Only the outermost operation (in [[visitBinaryOp]]) boxes the final result into a `Val.Num`.
+   * This replaces the old `visitExprAsDouble` chain, which kept intermediate results of `a + b * c`
+   * as unboxed `double`s. That optimisation is not available under the Int64/Float64/Dec128 model:
+   * an intermediate result now carries a representation, and raw `double` arithmetic would silently
+   * disagree with [[NumberMath]] (see `NumberMath.promoteFloat64Arithmetic`). Bitwise and shift ops
+   * keep their unboxed path via [[visitExprAsSafeLong]], since they force operands to `Long`
+   * regardless of representation.
    */
-  private def visitExprAsDouble(e: Expr)(implicit scope: ValScope): Double = try {
+  private def visitExprAsNum(e: Expr)(implicit scope: ValScope): Val.Num = try {
     e match {
-      case v: Val.Num => v.asDouble
+      case v: Val.Num => v
       case v: Val     => Error.fail("Expected Number, got " + v.prettyName, e.pos)
       case e: ValidId =>
         scope.bindings(e.nameIdx).value match {
-          case n: Val.Num => n.asDouble
+          case n: Val.Num => n
           case v          => Error.fail("Expected Number, got " + v.prettyName, e.pos)
         }
-      case e: BinaryOp => visitBinaryOpAsDouble(e)
-      case e: UnaryOp  => visitUnaryOpAsDouble(e)
-      case e           =>
+      case e =>
         visitExpr(e) match {
-          case n: Val.Num => n.asDouble
+          case n: Val.Num => n
           case v          => Error.fail("Expected Number, got " + v.prettyName, e.pos)
         }
     }
@@ -866,71 +807,8 @@ class Evaluator(
     Error.withStackFrame(e)
   }
 
-  private def visitBinaryOpAsDouble(e: BinaryOp)(implicit scope: ValScope): Double = {
-    val pos = e.pos
-    (e.op: @switch) match {
-      case Expr.BinaryOp.OP_* =>
-        val r = visitExprAsDouble(e.lhs) * visitExprAsDouble(e.rhs)
-        if (r.isNaN) Error.fail("Not a number", pos)
-        if (r.isInfinite) Error.fail("Overflow", pos); r
-      case Expr.BinaryOp.OP_/ =>
-        val l = visitExprAsDouble(e.lhs)
-        val r = visitExprAsDouble(e.rhs)
-        if (r == 0) Error.fail("Division by zero.", pos)
-        val result = l / r
-        if (result.isNaN) Error.fail("Not a number", pos)
-        if (result.isInfinite) Error.fail("Overflow", pos); result
-      case Expr.BinaryOp.OP_% =>
-        val l = visitExprAsDouble(e.lhs)
-        val r = visitExprAsDouble(e.rhs)
-        if (r == 0) Error.fail("Division by zero.", pos)
-        val result = l % r
-        if (result.isNaN) Error.fail("Not a number", pos); result
-      case Expr.BinaryOp.OP_+ =>
-        val r = visitExprAsDouble(e.lhs) + visitExprAsDouble(e.rhs)
-        if (r.isNaN) Error.fail("Not a number", pos)
-        if (r.isInfinite) Error.fail("Overflow", pos); r
-      case Expr.BinaryOp.OP_- =>
-        val r = visitExprAsDouble(e.lhs) - visitExprAsDouble(e.rhs)
-        if (r.isNaN) Error.fail("Not a number", pos)
-        if (r.isInfinite) Error.fail("Overflow", pos); r
-      case Expr.BinaryOp.OP_<< =>
-        val ll = visitExprAsDouble(e.lhs).toSafeLong(pos)
-        val rr = visitExprAsDouble(e.rhs).toSafeLong(pos)
-        if (rr < 0) Error.fail("Shift by negative exponent", pos)
-        val masked = (rr % 64).toInt
-        if (masked >= 1 && math.abs(ll) >= (1L << (63 - masked)))
-          Error.fail("Numeric value outside safe integer range for bitwise operation", pos)
-        (ll << masked).toDouble
-      case Expr.BinaryOp.OP_>> =>
-        val ll = visitExprAsDouble(e.lhs).toSafeLong(pos)
-        val rr = visitExprAsDouble(e.rhs).toSafeLong(pos)
-        if (rr < 0) Error.fail("Shift by negative exponent", pos)
-        (ll >> rr).toDouble
-      case Expr.BinaryOp.OP_& =>
-        (visitExprAsDouble(e.lhs).toSafeLong(pos) & visitExprAsDouble(e.rhs).toSafeLong(
-          pos
-        )).toDouble
-      case Expr.BinaryOp.OP_^ =>
-        (visitExprAsDouble(e.lhs).toSafeLong(pos) ^ visitExprAsDouble(e.rhs).toSafeLong(
-          pos
-        )).toDouble
-      case Expr.BinaryOp.OP_| =>
-        (visitExprAsDouble(e.lhs).toSafeLong(pos) | visitExprAsDouble(e.rhs).toSafeLong(
-          pos
-        )).toDouble
-      case _ =>
-        visitBinaryOp(e).asDouble
-    }
-  }
-
-  private def visitUnaryOpAsDouble(e: UnaryOp)(implicit scope: ValScope): Double =
-    (e.op: @switch) match {
-      case Expr.UnaryOp.OP_- => -visitExprAsDouble(e.value)
-      case Expr.UnaryOp.OP_+ => visitExprAsDouble(e.value)
-      case Expr.UnaryOp.OP_~ => (~visitExprAsDouble(e.value).toSafeLong(e.pos)).toDouble
-      case _                 => visitUnaryOp(e).asDouble
-    }
+  @inline private def visitExprAsSafeLong(e: Expr, pos: Position)(implicit scope: ValScope): Long =
+    visitExprAsNum(e).toSafeLong(pos)
 
   /**
    * Evaluate argument expressions into a pre-allocated array. Eliminates intermediate array
@@ -1344,38 +1222,23 @@ class Evaluator(
   def visitBinaryOp(e: BinaryOp)(implicit scope: ValScope): Val.Literal = {
     val pos = e.pos
     (e.op: @switch) match {
-      // Pure numeric fast path: avoid intermediate Val.Num allocation
+      // Numeric ops all route through NumberMath so the result keeps the widest representation
+      // needed to stay exact — see NumberMath.promoteFloat64Arithmetic.
       case Expr.BinaryOp.OP_* =>
-        val r = visitExprAsDouble(e.lhs) * visitExprAsDouble(e.rhs)
-        if (r.isNaN) Error.fail("Not a number", pos)
-        if (r.isInfinite) Error.fail("Overflow", pos)
-        Val.cachedNum(pos, r)
+        NumberMath.multiply(pos, visitExprAsNum(e.lhs), visitExprAsNum(e.rhs))
       case Expr.BinaryOp.OP_- =>
-        val r = visitExprAsDouble(e.lhs) - visitExprAsDouble(e.rhs)
-        if (r.isNaN) Error.fail("Not a number", pos)
-        if (r.isInfinite) Error.fail("Overflow", pos)
-        Val.cachedNum(pos, r)
+        NumberMath.subtract(pos, visitExprAsNum(e.lhs), visitExprAsNum(e.rhs))
       case Expr.BinaryOp.OP_/ =>
-        val l = visitExprAsDouble(e.lhs)
-        val r = visitExprAsDouble(e.rhs)
-        if (r == 0) Error.fail("Division by zero.", pos)
-        val result = l / r
-        if (result.isNaN) Error.fail("Not a number", pos)
-        if (result.isInfinite) Error.fail("Overflow", pos)
-        Val.cachedNum(pos, result)
+        NumberMath.divide(pos, visitExprAsNum(e.lhs), visitExprAsNum(e.rhs))
       // Polymorphic ops: nested match avoids Tuple2 allocation; Num checked first (most common)
       case Expr.BinaryOp.OP_% =>
         val l = visitExpr(e.lhs)
         val r = visitExpr(e.rhs)
         l match {
-          case Val.Num(_, ld) =>
+          case ln: Val.Num =>
             r match {
-              case Val.Num(_, rd) =>
-                if (rd == 0) Error.fail("Division by zero.", pos)
-                val result = ld % rd
-                if (result.isNaN) Error.fail("Not a number", pos)
-                Val.cachedNum(pos, result)
-              case _ => failBinOp(l, e.op, r, pos)
+              case rn: Val.Num => NumberMath.mod(pos, ln, rn)
+              case _           => failBinOp(l, e.op, r, pos)
             }
           case ls: Val.Str => Format.format(ls.str, r, pos)
           case _           => failBinOp(l, e.op, r, pos)
@@ -1385,16 +1248,16 @@ class Evaluator(
         val l = visitExpr(e.lhs)
         val r = visitExpr(e.rhs)
         (l, r) match {
-          case (Val.Num(_, l), Val.Num(_, r)) =>
-            val result = l + r
-            if (result.isNaN) Error.fail("Not a number", pos)
-            if (result.isInfinite) Error.fail("Overflow", pos)
-            Val.cachedNum(pos, result)
-          case (l: Val.Str, r: Val.Str) => Val.Str.concat(pos, l, r)
+          case (ln: Val.Num, rn: Val.Num) => NumberMath.add(pos, ln, rn)
+          case (l: Val.Str, r: Val.Str)   => Val.Str.concat(pos, l, r)
+          // renderNum, not renderDouble(asDouble): a number-to-string conversion must spell the
+          // caller's own value, and must agree with std.toString, std.format's %s and the
+          // renderers — all of which share RenderUtils.renderNum. Narrowing here made
+          // `"" + 9223372036854775807` spell it …776000 and `"" + 1e400` raise Overflow.
           case (n: Val.Num, r: Val.Str) =>
-            Val.Str.concat(pos, Val.Str(pos, RenderUtils.renderDouble(n.asDouble)), r)
+            Val.Str.concat(pos, Val.Str(pos, RenderUtils.renderNum(n)), r)
           case (l: Val.Str, n: Val.Num) =>
-            Val.Str.concat(pos, l, Val.Str(pos, RenderUtils.renderDouble(n.asDouble)))
+            Val.Str.concat(pos, l, Val.Str(pos, RenderUtils.renderNum(n)))
           case (l: Val.Str, r) =>
             Val.Str.concat(pos, l, Val.Str(pos, Materializer.stringify(r)))
           case (l, r: Val.Str) =>
@@ -1406,20 +1269,20 @@ class Evaluator(
 
       // Shift ops: pure numeric with safe-integer range check
       case Expr.BinaryOp.OP_<< =>
-        val ll = visitExprAsDouble(e.lhs).toSafeLong(pos)
-        val rr = visitExprAsDouble(e.rhs).toSafeLong(pos)
+        val ll = visitExprAsSafeLong(e.lhs, pos)
+        val rr = visitExprAsSafeLong(e.rhs, pos)
         if (rr < 0) Error.fail("Shift by negative exponent", pos)
         val masked = (rr % 64).toInt
         if (masked >= 1 && math.abs(ll) >= (1L << (63 - masked)))
           Error.fail("Numeric value outside safe integer range for bitwise operation", pos)
         else
-          Val.cachedNum(pos, (ll << masked).toDouble)
+          Val.cachedInt64(pos, ll << masked)
 
       case Expr.BinaryOp.OP_>> =>
-        val ll = visitExprAsDouble(e.lhs).toSafeLong(pos)
-        val rr = visitExprAsDouble(e.rhs).toSafeLong(pos)
+        val ll = visitExprAsSafeLong(e.lhs, pos)
+        val rr = visitExprAsSafeLong(e.rhs, pos)
         if (rr < 0) Error.fail("Shift by negative exponent", pos)
-        Val.cachedNum(pos, (ll >> rr).toDouble)
+        Val.cachedInt64(pos, ll >> rr)
 
       // Comparison ops: polymorphic (Num/Str/Arr)
       case Expr.BinaryOp.OP_< =>
@@ -1428,9 +1291,9 @@ class Evaluator(
         (l, r) match {
           case (Val.Str(_, l), Val.Str(_, r)) =>
             Val.bool(Util.compareStringsByCodepoint(l, r) < 0)
-          case (Val.Num(_, l), Val.Num(_, r)) => Val.bool(l < r)
-          case (x: Val.Arr, y: Val.Arr)       => Val.bool(compare(x, y) < 0)
-          case _                              => failBinOp(l, e.op, r, pos)
+          case (l: Val.Num, r: Val.Num) => Val.bool(NumberMath.compareTo(l, r) < 0)
+          case (x: Val.Arr, y: Val.Arr) => Val.bool(compare(x, y) < 0)
+          case _                        => failBinOp(l, e.op, r, pos)
         }
 
       case Expr.BinaryOp.OP_> =>
@@ -1439,9 +1302,9 @@ class Evaluator(
         (l, r) match {
           case (Val.Str(_, l), Val.Str(_, r)) =>
             Val.bool(Util.compareStringsByCodepoint(l, r) > 0)
-          case (Val.Num(_, l), Val.Num(_, r)) => Val.bool(l > r)
-          case (x: Val.Arr, y: Val.Arr)       => Val.bool(compare(x, y) > 0)
-          case _                              => failBinOp(l, e.op, r, pos)
+          case (l: Val.Num, r: Val.Num) => Val.bool(NumberMath.compareTo(l, r) > 0)
+          case (x: Val.Arr, y: Val.Arr) => Val.bool(compare(x, y) > 0)
+          case _                        => failBinOp(l, e.op, r, pos)
         }
 
       case Expr.BinaryOp.OP_<= =>
@@ -1450,9 +1313,9 @@ class Evaluator(
         (l, r) match {
           case (Val.Str(_, l), Val.Str(_, r)) =>
             Val.bool(Util.compareStringsByCodepoint(l, r) <= 0)
-          case (Val.Num(_, l), Val.Num(_, r)) => Val.bool(l <= r)
-          case (x: Val.Arr, y: Val.Arr)       => Val.bool(compare(x, y) <= 0)
-          case _                              => failBinOp(l, e.op, r, pos)
+          case (l: Val.Num, r: Val.Num) => Val.bool(NumberMath.compareTo(l, r) <= 0)
+          case (x: Val.Arr, y: Val.Arr) => Val.bool(compare(x, y) <= 0)
+          case _                        => failBinOp(l, e.op, r, pos)
         }
 
       case Expr.BinaryOp.OP_>= =>
@@ -1461,9 +1324,9 @@ class Evaluator(
         (l, r) match {
           case (Val.Str(_, l), Val.Str(_, r)) =>
             Val.bool(Util.compareStringsByCodepoint(l, r) >= 0)
-          case (Val.Num(_, l), Val.Num(_, r)) => Val.bool(l >= r)
-          case (x: Val.Arr, y: Val.Arr)       => Val.bool(compare(x, y) >= 0)
-          case _                              => failBinOp(l, e.op, r, pos)
+          case (l: Val.Num, r: Val.Num) => Val.bool(NumberMath.compareTo(l, r) >= 0)
+          case (x: Val.Arr, y: Val.Arr) => Val.bool(compare(x, y) >= 0)
+          case _                        => failBinOp(l, e.op, r, pos)
         }
 
       case Expr.BinaryOp.OP_in =>
@@ -1495,24 +1358,21 @@ class Evaluator(
 
       // Bitwise ops: pure numeric with safe-integer range check
       case Expr.BinaryOp.OP_& =>
-        Val.cachedNum(
+        Val.cachedInt64(
           pos,
-          (visitExprAsDouble(e.lhs).toSafeLong(pos) &
-          visitExprAsDouble(e.rhs).toSafeLong(pos)).toDouble
+          visitExprAsSafeLong(e.lhs, pos) & visitExprAsSafeLong(e.rhs, pos)
         )
 
       case Expr.BinaryOp.OP_^ =>
-        Val.cachedNum(
+        Val.cachedInt64(
           pos,
-          (visitExprAsDouble(e.lhs).toSafeLong(pos) ^
-          visitExprAsDouble(e.rhs).toSafeLong(pos)).toDouble
+          visitExprAsSafeLong(e.lhs, pos) ^ visitExprAsSafeLong(e.rhs, pos)
         )
 
       case Expr.BinaryOp.OP_| =>
-        Val.cachedNum(
+        Val.cachedInt64(
           pos,
-          (visitExprAsDouble(e.lhs).toSafeLong(pos) |
-          visitExprAsDouble(e.rhs).toSafeLong(pos)).toDouble
+          visitExprAsSafeLong(e.lhs, pos) | visitExprAsSafeLong(e.rhs, pos)
         )
 
       case _ =>
@@ -2086,7 +1946,7 @@ class Evaluator(
   // this to direct instanceof/checkcast without Tuple2 allocation. The inner array loop uses nested
   // match for the per-element numeric fast path. Error path is extracted to keep the happy path small.
   def compare(x: Val, y: Val): Int = (x, y) match {
-    case (x: Val.Num, y: Val.Num) => Util.compareDoubles(x.asDouble, y.asDouble)
+    case (x: Val.Num, y: Val.Num) => NumberMath.compareTo(x, y)
     case (x: Val.Str, y: Val.Str) => Util.compareStringsByCodepoint(x.str, y.str)
     case (x: Val.Arr, y: Val.Arr) =>
       // Use eval(i) to access raw Eval without materializing ConcatViews.
@@ -2112,7 +1972,7 @@ class Evaluator(
           val cmp = xi match {
             case xn: Val.Num =>
               yi match {
-                case yn: Val.Num => Util.compareDoubles(xn.asDouble, yn.asDouble)
+                case yn: Val.Num => NumberMath.compareTo(xn, yn)
                 case _           => compare(xi, yi)
               }
             case _ => compare(xi, yi)
@@ -2141,7 +2001,7 @@ class Evaluator(
       }
     case x: Val.Num =>
       y match {
-        case y: Val.Num => x.asDouble == y.asDouble
+        case y: Val.Num => NumberMath.compareTo(x, y) == 0
         case _          => false
       }
     case x: Val.Arr =>
@@ -2195,14 +2055,6 @@ class Evaluator(
 }
 
 object Evaluator {
-
-  implicit class SafeDoubleOps(private val d: Double) extends AnyVal {
-    @inline def toSafeLong(pos: Position)(implicit ev: EvalErrorScope): Long = {
-      if (d < Val.DOUBLE_MIN_SAFE_INTEGER || d > Val.DOUBLE_MAX_SAFE_INTEGER)
-        Error.fail("Numeric value outside safe integer range for bitwise operation", pos)
-      d.toLong
-    }
-  }
 
   /**
    * Logger, used for warnings and trace. The first argument is true if the message is a trace

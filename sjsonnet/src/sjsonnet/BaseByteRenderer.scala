@@ -1,6 +1,5 @@
 package sjsonnet
 
-import ujson._
 import upickle.core.{ArrVisitor, ObjVisitor, Visitor}
 
 /**
@@ -21,7 +20,7 @@ class BaseByteRenderer[T <: java.io.OutputStream](
     indent: Int = -1,
     escapeUnicode: Boolean = false,
     newline: Array[Byte] = Array('\n'.toByte))
-    extends JsVisitor[T, T] {
+    extends JsonVisitor[T, T] {
 
   override def visitJsonableObject(length: Int, index: Int): ObjVisitor[T, T] =
     visitObject(length, index)
@@ -142,6 +141,13 @@ class BaseByteRenderer[T <: java.io.OutputStream](
       elemBuilder.appendUnsafeC(s.charAt(i))
       i += 1
     }
+    flushByteBuilder()
+    out
+  }
+
+  /** See [[BaseCharRenderer.visitInt64]] — same reason, byte-oriented output. */
+  override def visitInt64(l: Long, index: Int): T = {
+    writeLongDirect(l)
     flushByteBuilder()
     out
   }

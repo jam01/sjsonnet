@@ -96,7 +96,7 @@ object ParserTests extends TestSuite {
 
     test("computedImports") {
       parse("""local foo = import "foo"; 0""") ==>
-      LocalExpr(pos(6), Array(Bind(pos(6), "foo", null, Import(pos(12), "foo"))), Num(pos(26), 0.0))
+      LocalExpr(pos(6), Array(Bind(pos(6), "foo", null, Import(pos(12), "foo"))), Num(pos(26), 0))
       parse("""local foo = (import "foo") + bar; 0""") ==>
       LocalExpr(
         pos(6),
@@ -108,7 +108,7 @@ object ParserTests extends TestSuite {
             BinaryOp(pos(27), Import(pos(13), "foo"), 3, Id(pos(29), "bar"))
           )
         ),
-        Num(pos(34), 0.0)
+        Num(pos(34), 0)
       )
 
       parseErr("""import "foo".bar""")
@@ -131,7 +131,14 @@ object ParserTests extends TestSuite {
     }
 
     test("underscore digit separators") {
-      // Valid cases from go-jsonnet TestNumberSeparators
+      // Valid cases from go-jsonnet TestNumberSeparators.
+      //
+      // Non-integer expectations are written as `Num(pos, "<text>")` rather than as a Scala
+      // literal: the string overload is the parser's own entry point, so the assertion says
+      // exactly what this test is about — the separators were stripped and nothing else was
+      // touched — and the expected text is the reference token's `data` field verbatim. A Scala
+      // double literal would instead build a Float64, which is not what a decimal literal parses
+      // to since the numeric rework (see madr-better-nums.md); integers are Int64 either way.
       // {"123_456", "", Tokens{{kind: tokenNumber, data: "123456"}}}
       parse("123_456") ==> Num(pos(0), 123456)
       // {"1_750_000", "", Tokens{{kind: tokenNumber, data: "1750000"}}}
@@ -139,21 +146,21 @@ object ParserTests extends TestSuite {
       // {"1_2_3", "", Tokens{{kind: tokenNumber, data: "123"}}}
       parse("1_2_3") ==> Num(pos(0), 123)
       // {"3.141_592", "", Tokens{{kind: tokenNumber, data: "3.141592"}}}
-      parse("3.141_592") ==> Num(pos(0), 3.141592)
+      parse("3.141_592") ==> Num(pos(0), "3.141592")
       // {"1_200.0", "", Tokens{{kind: tokenNumber, data: "1200.0"}}}
-      parse("1_200.0") ==> Num(pos(0), 1200.0)
+      parse("1_200.0") ==> Num(pos(0), "1200.0")
       // {"0e1_01", "", Tokens{{kind: tokenNumber, data: "0e101"}}}
-      parse("0e1_01") ==> Num(pos(0), 0e101)
+      parse("0e1_01") ==> Num(pos(0), "0e101")
       // {"10_10e3", "", Tokens{{kind: tokenNumber, data: "1010e3"}}}
-      parse("10_10e3") ==> Num(pos(0), 1010e3)
+      parse("10_10e3") ==> Num(pos(0), "1010e3")
       // {"2_3e1_2", "", Tokens{{kind: tokenNumber, data: "23e12"}}}
-      parse("2_3e1_2") ==> Num(pos(0), 23e12)
+      parse("2_3e1_2") ==> Num(pos(0), "23e12")
       // {"1.1_2e100", "", Tokens{{kind: tokenNumber, data: "1.12e100"}}}
-      parse("1.1_2e100") ==> Num(pos(0), 1.12e100)
+      parse("1.1_2e100") ==> Num(pos(0), "1.12e100")
       // {"1.1e-10_1", "", Tokens{{kind: tokenNumber, data: "1.1e-101"}}}
-      parse("1.1e-10_1") ==> Num(pos(0), 1.1e-101)
+      parse("1.1e-10_1") ==> Num(pos(0), "1.1e-101")
       // {"9.109_383_56e-31", "", Tokens{{kind: tokenNumber, data: "9.10938356e-31"}}}
-      parse("9.109_383_56e-31") ==> Num(pos(0), 9.10938356e-31)
+      parse("9.109_383_56e-31") ==> Num(pos(0), "9.10938356e-31")
 
       // {"01_100", "", Tokens{{kind: tokenNumber, data: "0"}, {kind: tokenNumber, data: "1100"}}}
       // go-jsonnet lexer produces: 0, 1100 (two number tokens)
@@ -173,8 +180,8 @@ object ParserTests extends TestSuite {
       // But 5_6 starts with digit which is not a valid identifier
       // So 1_2.3_4.5_6.7_8 as a complete expression should fail
       // We verify individual parts parse correctly:
-      parse("1_2.3_4") ==> Num(pos(0), 12.34)
-      parse("5_6.7_8") ==> Num(pos(0), 56.78)
+      parse("1_2.3_4") ==> Num(pos(0), "12.34")
+      parse("5_6.7_8") ==> Num(pos(0), "56.78")
       // And the combined expression fails (field name can't start with digit)
       parseErr("1_2.3_4.5_6.7_8")
 
@@ -185,7 +192,7 @@ object ParserTests extends TestSuite {
       // go-jsonnet lexer produces: 1e23, e4 (identifier)
       // In sjsonnet, 1e2_3 is parsed as number 1e23, then e4 is identifier
       // Two adjacent values without operator = parse error
-      parse("1e2_3") ==> Num(pos(0), 1e23)
+      parse("1e2_3") ==> Num(pos(0), "1e23")
       parseErr("1e2_3e4")
 
       // Error cases from go-jsonnet TestNumberSeparators

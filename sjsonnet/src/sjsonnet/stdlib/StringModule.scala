@@ -3,6 +3,7 @@ package sjsonnet.stdlib
 import sjsonnet._
 import sjsonnet.functions.AbstractFunctionModule
 
+import java.math.MathContext
 import java.nio.charset.StandardCharsets.UTF_8
 import scala.collection.mutable
 
@@ -79,7 +80,7 @@ object StringModule extends AbstractFunctionModule {
    */
   private object Length extends Val.Builtin1("length", "x") {
     def evalRhs(x: Eval, ev: EvalScope, pos: Position): Val =
-      Val.cachedNum(
+      Val.cachedInt64(
         pos,
         (x.value match {
           case v: Val.Str =>
@@ -90,7 +91,7 @@ object StringModule extends AbstractFunctionModule {
           case o: Val.Obj  => o.visibleKeyNames.length
           case o: Val.Func => o.params.requiredParamsCount
           case x           => Error.fail("Cannot get length of " + x.prettyName)
-        }).toDouble
+        }).toLong
       )
   }
 
@@ -112,7 +113,7 @@ object StringModule extends AbstractFunctionModule {
           "expected a single character string (length " + codePointCount + "), got: " + shown
         )
       } else {
-        Val.cachedNum(pos, s.codePointAt(0).toDouble)
+        Val.cachedInt64(pos, s.codePointAt(0).toLong)
       }
     }
   }
@@ -1060,12 +1061,9 @@ object StringModule extends AbstractFunctionModule {
       if (s.isEmpty || s == "-" || s == "+") {
         Error.fail("Cannot parse '" + s + "' as an integer in base 10")
       }
-      if (s.charAt(0) == '-') {
-        val result = parseNat(s, 1, 10, "base 10")
-        Val.cachedNum(pos, if (result == 0.0) 0.0 else -result)
-      } else if (s.charAt(0) == '+') {
-        Val.cachedNum(pos, parseNat(s, 1, 10, "base 10"))
-      } else Val.cachedNum(pos, parseNat(s, 0, 10, "base 10"))
+      if (s.charAt(0) == '-') parseNat(pos, s, 1, 10, "base 10", negate = true)
+      else if (s.charAt(0) == '+') parseNat(pos, s, 1, 10, "base 10")
+      else parseNat(pos, s, 0, 10, "base 10")
     }
   }
 
@@ -1080,7 +1078,7 @@ object StringModule extends AbstractFunctionModule {
     def evalRhs(str: Eval, ev: EvalScope, pos: Position): Val = {
       val s = str.value.asString
       if (s.isEmpty) Error.fail("Cannot parse '' as an integer in base 8")
-      Val.cachedNum(pos, parseNat(s, 0, 8, "base 8"))
+      parseNat(pos, s, 0, 8, "base 8")
     }
   }
 
@@ -1095,18 +1093,46 @@ object StringModule extends AbstractFunctionModule {
     def evalRhs(str: Eval, ev: EvalScope, pos: Position): Val = {
       val s = str.value.asString
       if (s.isEmpty) Error.fail("Cannot parse '' as an integer in base 16")
-      Val.cachedNum(pos, parseNat(s, 0, 16, "base 16"))
+      parseNat(pos, s, 0, 16, "base 16")
     }
   }
 
-  private def parseNat(str: String, start: Int, base: Int, baseName: String): Double = {
-    if (base == 16) parseHexNat(str, start, baseName)
-    else parseDigitNat(str, start, base, baseName)
+  /**
+   * Parses the unsigned integer spelled in `str` from offset `start` in `base`, exactly.
+   *
+   * `Int64` while the value fits a `Long`, widening to `Dec128` beyond that. #794 deliberately made
+   * this family unbounded — accumulating in `Double` — so it could parse past 64-bit range like
+   * go-jsonnet does; `Dec128` keeps that widening intent and additionally keeps the result exact,
+   * where `Double` started rounding at 2^53 (`std.parseInt('9223372036854775808')` used to come
+   * back as 9223372036854776000).
+   *
+   * `negate` is `std.parseInt`'s leading `-`. It is applied before boxing so `-0` still yields a
+   * plain `0`: `Int64` has no signed zero, and the pre-existing behaviour was an explicit `+0`.
+   */
+  private def parseNat(
+      pos: Position,
+      str: String,
+      start: Int,
+      base: Int,
+      baseName: String,
+      negate: Boolean = false): Val.Num = {
+    val sub =
+      if (base == 16) validatedHexDigits(str, start, baseName)
+      else validatedDigits(str, start, base, baseName)
+    try {
+      val l = java.lang.Long.parseLong(sub, base)
+      Val.cachedInt64(pos, if (negate) -l else l)
+    } catch {
+      case _: NumberFormatException =>
+        val bi = new java.math.BigInteger(sub, base)
+        val bd = BigDecimal(BigInt(if (negate) bi.negate() else bi), MathContext.DECIMAL128)
+        // `-Long.MinValue` is the one value the Long path above cannot spell but Dec128 can demote.
+        if (bd.isValidLong) Val.cachedInt64(pos, bd.toLong) else Val.Num(pos, bd)
+    }
   }
 
-  private def parseDigitNat(str: String, start: Int, base: Int, baseName: String): Double = {
+  private def validatedDigits(str: String, start: Int, base: Int, baseName: String): String = {
     val len = str.length
-    // Validate all digits first
     var i = start
     while (i < len) {
       val digit = str.charAt(i) - '0'
@@ -1115,18 +1141,10 @@ object StringModule extends AbstractFunctionModule {
       }
       i += 1
     }
-    // Parse with exact integer arithmetic, then convert to double.
-    // This avoids precision loss from accumulating in double arithmetic.
-    val sub = if (start == 0) str else str.substring(start)
-    try {
-      java.lang.Long.parseLong(sub, base).toDouble
-    } catch {
-      case _: NumberFormatException =>
-        new java.math.BigInteger(sub, base).doubleValue()
-    }
+    if (start == 0) str else str.substring(start)
   }
 
-  private def parseHexNat(str: String, start: Int, baseName: String): Double = {
+  private def validatedHexDigits(str: String, start: Int, baseName: String): String = {
     val len = str.length
     // Validate all hex digits and check if normalization is needed.
     // The official digit mapping accepts ':'..'?' as digits 10-15 in addition to A-F/a-f.
@@ -1145,31 +1163,21 @@ object StringModule extends AbstractFunctionModule {
       i += 1
     }
     // Normalize non-standard hex chars to lowercase a-f for Long/BigInteger parsing
-    val sub =
-      if (!needsNormalize) {
-        if (start == 0) str else str.substring(start)
-      } else {
-        val buf = new Array[Char](len - start)
-        var j = 0
-        i = start
-        while (i < len) {
-          val code = str.charAt(i)
-          buf(j) =
-            if (code >= ':' && code <= '?') ('a' + (code - ':')).toChar
-            else code
-          i += 1
-          j += 1
-        }
-        new String(buf)
+    if (!needsNormalize) {
+      if (start == 0) str else str.substring(start)
+    } else {
+      val buf = new Array[Char](len - start)
+      var j = 0
+      i = start
+      while (i < len) {
+        val code = str.charAt(i)
+        buf(j) =
+          if (code >= ':' && code <= '?') ('a' + (code - ':')).toChar
+          else code
+        i += 1
+        j += 1
       }
-    // Parse with exact integer arithmetic, then convert to double.
-    try {
-      val unsigned = java.lang.Long.parseUnsignedLong(sub, 16)
-      if (unsigned >= 0) unsigned.toDouble
-      else (unsigned >>> 1).toDouble * 2.0 + (unsigned & 1)
-    } catch {
-      case _: NumberFormatException =>
-        new java.math.BigInteger(sub, 16).doubleValue()
+      new String(buf)
     }
   }
 
@@ -1253,7 +1261,7 @@ object StringModule extends AbstractFunctionModule {
       val arr = new Array[Eval](bytes.length)
       var i = 0
       while (i < bytes.length) {
-        arr(i) = Val.cachedNum(pos, (bytes(i) & 0xff).toDouble)
+        arr(i) = Val.cachedInt64(pos, (bytes(i) & 0xff).toLong)
         i += 1
       }
       Val.Arr(pos, arr)
@@ -1378,7 +1386,7 @@ object StringModule extends AbstractFunctionModule {
             // String.indexOf returns UTF-16 offsets. For BMP-only strings those are already
             // Jsonnet codepoint offsets, so avoid a codePointCount scan for every match.
             while (0 <= matchIndex && matchIndex < str.length) {
-              indices.+=(Val.cachedNum(pos, matchIndex.toDouble))
+              indices.+=(Val.cachedInt64(pos, matchIndex.toLong))
               matchIndex = str.indexOf(pat, matchIndex + 1)
             }
           } else {
@@ -1389,7 +1397,7 @@ object StringModule extends AbstractFunctionModule {
             while (0 <= matchIndex && matchIndex < str.length) {
               val codePointIndex =
                 prevCodePointIndex + str.codePointCount(prevCharIndex, matchIndex)
-              indices.+=(Val.cachedNum(pos, codePointIndex.toDouble))
+              indices.+=(Val.cachedInt64(pos, codePointIndex.toLong))
 
               prevCharIndex = matchIndex
               prevCodePointIndex = codePointIndex

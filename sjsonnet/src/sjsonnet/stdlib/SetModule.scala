@@ -53,6 +53,60 @@ object SetModule extends AbstractFunctionModule {
     true
   }
 
+  private final val NumRepMixed = 0
+  private final val NumRepInt64 = 1
+  private final val NumRepFloat64 = 2
+
+  /**
+   * The single [[Val.Num]] representation every element of `values` uses, or [[NumRepMixed]].
+   *
+   * The unboxed numeric sorts below are gated on this rather than calling `asDouble`
+   * unconditionally. Narrowing everything to `Double` would collapse distinct [[Val.Dec128]] values
+   * that happen to share a double (and raise `Overflow` for those outside binary64 range), and the
+   * no-keyF sort rebuilds its array from the extracted primitives, so it would additionally retype
+   * `Int64`/`Dec128` elements as `Float64` on the way out.
+   *
+   * Both uniform cases keep a primitive sort — [[Val.Int64]] especially, since it is the default
+   * representation for integers and so the common case for `std.sort`. Only genuinely mixed (or
+   * `Dec128`-bearing) arrays pay for `NumberMath.compareTo`.
+   */
+  private def numRepKind(values: Array[Val]): Int = {
+    if (values.isEmpty) return NumRepMixed
+    val int64 = values(0) match {
+      case _: Val.Int64   => true
+      case _: Val.Float64 => false
+      case _              => return NumRepMixed
+    }
+    var i = 1
+    while (i < values.length) {
+      val matches =
+        if (int64) values(i).isInstanceOf[Val.Int64] else values(i).isInstanceOf[Val.Float64]
+      if (!matches) return NumRepMixed
+      i += 1
+    }
+    if (int64) NumRepInt64 else NumRepFloat64
+  }
+
+  private def toLongArray(values: Array[Val]): Array[Long] = {
+    val out = new Array[Long](values.length)
+    var i = 0
+    while (i < out.length) {
+      out(i) = values(i).asInstanceOf[Val.Int64].num; i += 1
+    }
+    out
+  }
+
+  private def toDoubleArray(values: Array[Val]): Array[Double] = {
+    val out = new Array[Double](values.length)
+    var i = 0
+    while (i < out.length) {
+      out(i) = values(i).asInstanceOf[Val.Float64].num; i += 1
+    }
+    out
+  }
+
+  @inline private def numAt(values: Array[Val], i: Int): Val.Num = values(i).asInstanceOf[Val.Num]
+
   @inline private def isDefaultKeyF(v: Val): Boolean = v.asInstanceOf[AnyRef] eq DefaultKeyF
 
   @inline private def isIdentityKeyF(v: Val): Boolean =
@@ -103,7 +157,10 @@ object SetModule extends AbstractFunctionModule {
     a match {
       case aNum: Val.Num =>
         b match {
-          case bNum: Val.Num => Util.compareDoubles(aNum.asDouble, bNum.asDouble)
+          // NumberMath, not `Util.compareDoubles(asDouble, asDouble)`: narrowing to `Double` would
+          // collapse distinct `Dec128` keys that share a double (making them duplicates for
+          // set/uniq) and would raise `Overflow` for any `Dec128` outside binary64 range.
+          case bNum: Val.Num => NumberMath.compareTo(aNum, bNum)
           case _             => ev.compare(a, b)
         }
       case aStr: Val.Str =>
@@ -400,14 +457,22 @@ object SetModule extends AbstractFunctionModule {
           val sortedIndices = if (keyType == SortKindString) {
             indices.sortBy(i => keys(i).cast[Val.Str].asString)(Util.CodepointStringOrdering)
           } else if (keyType == SortKindNumber) {
-            // Extract doubles into primitive array for unboxed comparison,
-            // avoiding repeated Val.Num cast + Double boxing per comparison.
-            val dkeys = new Array[Double](keys.length)
-            var di = 0
-            while (di < dkeys.length) {
-              dkeys(di) = keys(di).asInstanceOf[Val.Num].asDouble; di += 1
+            // Extract keys into a primitive array for unboxed comparison, avoiding a repeated
+            // Val.Num cast + boxing per comparison. Only sound when the keys share one
+            // representation; see numRepKind.
+            numRepKind(keys) match {
+              case NumRepInt64 =>
+                val lkeys = toLongArray(keys)
+                indices.sortWith((a, b) => lkeys(a) < lkeys(b))
+              case NumRepFloat64 =>
+                val dkeys = toDoubleArray(keys)
+                // Util.compareDoubles rather than a plain `<`: the latter is an inconsistent
+                // comparator in the presence of NaN, and disagreed with the ordering the rest of
+                // the file (and the `<` operator) uses.
+                indices.sortWith((a, b) => Util.compareDoubles(dkeys(a), dkeys(b)) < 0)
+              case _ =>
+                indices.sortWith((a, b) => NumberMath.compareTo(numAt(keys, a), numAt(keys, b)) < 0)
             }
-            indices.sortWith((a, b) => dkeys(a) < dkeys(b))
           } else if (keyType == SortKindArray) {
             indices.sortBy(i => keys(i).cast[Val.Arr])(ev.compare(_, _))
           } else {
@@ -448,18 +513,33 @@ object SetModule extends AbstractFunctionModule {
                 )
             )
           } else if (keyType == SortKindNumber) {
-            // Primitive double sort: extract doubles, sort primitively (DualPivotQuicksort),
-            // then reconstruct Val.Num array. Avoids Comparator virtual dispatch + boxing.
+            // Primitive sort: extract to a primitive array, sort it (DualPivotQuicksort), then
+            // reconstruct the Val.Num array. Avoids Comparator virtual dispatch + boxing.
+            // Rebuilding from primitives is only lossless when the elements share one
+            // representation — otherwise sort the values themselves, so Int64/Dec128 survive the
+            // round trip instead of being retyped as Float64.
             val n = strict.length
-            val doubles = new Array[Double](n)
-            var di = 0
-            while (di < n) {
-              doubles(di) = strict(di).asInstanceOf[Val.Num].asDouble; di += 1
-            }
-            java.util.Arrays.sort(doubles)
-            di = 0
-            while (di < n) {
-              strict(di) = Val.cachedNum(pos, doubles(di)); di += 1
+            numRepKind(strict) match {
+              case NumRepInt64 =>
+                val longs = toLongArray(strict)
+                java.util.Arrays.sort(longs)
+                var di = 0
+                while (di < n) {
+                  strict(di) = Val.cachedInt64(pos, longs(di)); di += 1
+                }
+              case NumRepFloat64 =>
+                val doubles = toDoubleArray(strict)
+                java.util.Arrays.sort(doubles)
+                var di = 0
+                while (di < n) {
+                  strict(di) = Val.cachedNum(pos, doubles(di)); di += 1
+                }
+              case _ =>
+                java.util.Arrays.sort(
+                  strict.asInstanceOf[Array[AnyRef]],
+                  (a: AnyRef, b: AnyRef) =>
+                    NumberMath.compareTo(a.asInstanceOf[Val.Num], b.asInstanceOf[Val.Num])
+                )
             }
           } else if (keyType == SortKindArray) {
             java.util.Arrays.sort(

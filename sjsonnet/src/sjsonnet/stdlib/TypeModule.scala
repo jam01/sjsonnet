@@ -151,14 +151,14 @@ object TypeModule extends AbstractFunctionModule {
 
   private object Compare extends Val.Builtin2("__compare", "v1", "v2") {
     def evalRhs(v1: Eval, v2: Eval, ev: EvalScope, pos: Position): Val =
-      Val.cachedNum(pos, Util.compareJsonnetStd(v1.value, v2.value, ev).toDouble)
+      Val.cachedInt64(pos, Util.compareJsonnetStd(v1.value, v2.value, ev).toLong)
   }
 
   private object CompareArray extends Val.Builtin2("__compare_array", "arr1", "arr2") {
     def evalRhs(arr1: Eval, arr2: Eval, ev: EvalScope, pos: Position): Val =
-      Val.cachedNum(
+      Val.cachedInt64(
         pos,
-        Util.compareJsonnetStdArrays(arr1.value.asArr, arr2.value.asArr, ev).toDouble
+        Util.compareJsonnetStdArrays(arr1.value.asArr, arr2.value.asArr, ev).toLong
       )
   }
 
@@ -181,7 +181,11 @@ object TypeModule extends AbstractFunctionModule {
       } else {
         (x, y) match {
           case (x: Val.Num, y: Val.Num) =>
-            x.rawDouble == y.rawDouble
+            // NumberMath rather than `rawDouble ==`: narrowing would report two distinct Dec128
+            // values that round to the same double as equal. It keeps #913's
+            // `primitiveEquals(-0.0, 0.0) == true`, since the all-Float64 case still routes through
+            // Util.compareDoubles, and matches what `==` (Evaluator.equal) now does.
+            NumberMath.compareTo(x, y) == 0
           case (_: Val.Str, _: Val.Str) =>
             ev.compare(x, y) == 0
           case (_: Val.Bool, _: Val.Bool) =>

@@ -786,7 +786,10 @@ object Format {
               if (formatted.conversion == 's') formatString(formatted, vs.str)
               else widenRaw(formatted, vs.str)
             case vn: Val.Num =>
-              val s = vn.asDouble
+              // A `def`, not a `val`: `%s` must not narrow at all (see its case below), and
+              // `asDouble` raises `Overflow`/`Not a number` for values a Dec128 holds perfectly
+              // well. Every other conversion uses it exactly once.
+              def s: Double = vn.asDouble
               formatted.conversion match {
                 case 'd' | 'i' | 'u' => formatInteger(formatted, s)
                 case 'o'             => formatOctal(formatted, s)
@@ -806,7 +809,11 @@ object Format {
                   val c = if (codePoint >= 0xd800 && codePoint <= 0xdfff) 0xfffd else codePoint
                   widenRaw(formatted, Character.toString(c))
                 case 's' =>
-                  formatString(formatted, RenderUtils.renderDouble(s))
+                  // `%s` stringifies a value the way Jsonnet itself does, so it must agree with
+                  // `std.toString` — narrowing here would put a *different* number in the output
+                  // string (`'%s' % 9223372036854775807` spelled it …808). The Python-semantics
+                  // conversions above stay Double-domain: rounding is their defined behaviour.
+                  formatString(formatted, RenderUtils.renderNum(vn))
                 case _ =>
                   Error.fail(
                     "unsupported format conversion at position %d, got number".format(i)
@@ -1009,7 +1016,11 @@ object Format {
     rawVal match {
       case vs: Val.Str => vs.str
       case vn: Val.Num =>
-        RenderUtils.renderDouble(vn.asDouble)
+        // This is the `%(key)s` fast path, so it must spell numbers exactly as the generic `%s`
+        // above does — both are the same conversion, and renderNum is what `std.toString` and the
+        // renderers use. Narrowing here made `'%(n)s' % {n: 9223372036854775807}` disagree with
+        // `'%s' % 9223372036854775807`.
+        RenderUtils.renderNum(vn)
       case _: Val.True  => "true"
       case _: Val.False => "false"
       case _: Val.Null  => "null"

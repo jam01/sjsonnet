@@ -3,7 +3,26 @@ package sjsonnet
 import utest._
 
 object FileTests extends BaseFileTests {
-  val skippedTests: Set[String] = Set(
+
+  /**
+   * Tests whose real output this harness structurally cannot express — see the same-named set in
+   * `src-jvm-native/sjsonnet/FileTests.scala` for the full rationale. In short: `check` compares a
+   * `ujson.Value`, which stores every number as a `Double`, and since the numeric rework these
+   * files evaluate to values outside binary64's range or precision.
+   */
+  private val ujsonNarrowingSkippedTests: Set[String] = Set(
+    // 1e309 is a valid Dec128 now, not a parse error; result is outside double range.
+    "error.overflow.jsonnet",
+    "error.overflow2.jsonnet",
+    // Arithmetic no longer overflows at binary64's boundaries.
+    "error.arithmetic_overflow_addition.jsonnet",
+    "error.arithmetic_overflow_multiplication.jsonnet",
+    "error.arithmetic_overflow_subtraction.jsonnet",
+    // parseInt/parseHex/parseOctal are exact now, so results past 2^53 come back as a ujson Str.
+    "parseint_large_precision.jsonnet"
+  )
+
+  val skippedTests: Set[String] = ujsonNarrowingSkippedTests ++ Set(
     // Stack size issues with the JS runner
     "recursive_function.jsonnet",
     "error.array_recursive_manifest.jsonnet",
@@ -20,6 +39,11 @@ object FileTests extends BaseFileTests {
   )
 
   val goTestDataSkippedTests: Set[String] = Set(
+    // Results outside binary64 range; see ujsonNarrowingSkippedTests.
+    "div4.jsonnet",
+    "inf_min_number.jsonnet",
+    "inf_mul_number.jsonnet",
+    "inf_sum_number.jsonnet",
     // We support base64 of unicode strings
     "builtinBase64_string_high_codepoint.jsonnet",
     "builtinSha1.jsonnet",

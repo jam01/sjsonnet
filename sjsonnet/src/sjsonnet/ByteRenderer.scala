@@ -73,6 +73,20 @@ class ByteRenderer(out: OutputStream = new java.io.ByteArrayOutputStream(), inde
     else appendString(RenderUtils.renderDouble(d))
   }
 
+  /**
+   * The three-way numeric dispatch for the fused path.
+   *
+   * [[materializeDirect]] bypasses the Visitor interface entirely, so it does not inherit
+   * [[Materializer]]'s dispatch and needs its own. Going through `asDouble` here would narrow every
+   * `Int64` past 2^53 and every `Dec128`, and would raise `Overflow` for magnitudes a `Dec128`
+   * holds perfectly well.
+   */
+  @inline private def renderNum(n: Val.Num): Unit = n match {
+    case Val.Int64(_, l)   => writeLongDirect(l)
+    case Val.Float64(_, d) => renderDouble(d)
+    case Val.Dec128(_, d)  => appendString(RenderUtils.renderDec128(d))
+  }
+
   override def flushBuffer(): Unit = {
     if (commaBuffered) {
       elemBuilder.append(',')
@@ -215,7 +229,7 @@ class ByteRenderer(out: OutputStream = new java.io.ByteArrayOutputStream(), inde
         if (s.isInstanceOf[Val.AsciiSafeStr]) renderAsciiSafeValueString(s.str)
         else renderQuotedString(s.str)
       case 1 => // TAG_NUM
-        renderDouble(v.asDouble)
+        renderNum(v.asInstanceOf[Val.Num])
       case 2 => // TAG_TRUE
         elemBuilder.ensureLength(4)
         elemBuilder.appendUnsafeC('t')

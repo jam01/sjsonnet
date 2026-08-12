@@ -56,6 +56,11 @@ class TomlRenderer(
     }
   }
 
+  override def visitInt64(l: Long, index: Int): StringBuilderWriter = {
+    out.getBuilder.append(l)
+    flush
+  }
+
   override def visitFloat64(d: Double, index: Int): StringBuilderWriter = {
     d match {
       case Double.PositiveInfinity                     => out.write("inf")
@@ -67,6 +72,17 @@ class TomlRenderer(
         if (RenderUtils.isExactLongDouble(d, l)) out.getBuilder.append(l)
         else out.write(RenderUtils.renderDouble(d))
     }
+    flush
+  }
+
+  // Dec128 arrives pre-rendered by the Materializer; -0, inf and nan can only reach TOML as
+  // Float64, so visitFloat64 above remains the sole place those spellings are decided.
+  override def visitFloat64StringParts(
+      s: CharSequence,
+      decIndex: Int,
+      expIndex: Int,
+      index: Int): StringBuilderWriter = {
+    out.getBuilder.append(s)
     flush
   }
 

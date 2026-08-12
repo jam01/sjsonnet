@@ -17,18 +17,24 @@ object TailCallOptimizationTests extends TestSuite {
       ) ==> ujson.Num(3628800)
     }
 
-    test("tailstrictFactorialOverflow") {
-      // factorial(1000) overflows IEEE 754 double, sjsonnet should report overflow
-      val err = evalErr(
+    test("tailstrictFactorialBeyondDoubleRange") {
+      // factorial(1000) is far outside IEEE 754 double range, which used to make this an
+      // Overflow error. Since the numeric rework the accumulator promotes to Dec128, whose
+      // exponent range is far wider, so the recursion runs to completion — a stronger TCO
+      // exercise than bailing out partway. The mantissa is rounded to DECIMAL128's 34
+      // significant digits; the exponent is exact.
+      //
+      // Asserted through std.toString because `eval` returns a ujson.Value, whose numbers are
+      // Doubles: comparing the value itself would only see Infinity.
+      eval(
         """
           |local factorial(n, accum=1) =
           |  if n <= 1 then accum
           |  else factorial(n - 1, n * accum) tailstrict;
           |
-          |factorial(1000)
+          |std.toString(factorial(1000))
           |""".stripMargin
-      )
-      assert(err.contains("Overflow"))
+      ) ==> ujson.Str("4.023872600770937735437024339230024e+2567")
     }
 
     test("tailstrictDeepRecursionSum") {
