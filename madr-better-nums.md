@@ -54,6 +54,11 @@ Opt-out — `-Dsjsonnet.floatAsBigDecimal=false`:
 Library API change:
 
 * Visitors that handle numeric materialization must be prepared to receive decimal values through `visitFloat64StringParts`, which is now used for decimal materialization.
+* **`Interpreter.interpret` narrows.** It is the convenience overload for `interpret0(txt, path, ujson.Value)`, and `ujson.Value`'s AST stores every number as a `Double` — so an exact `Int64` past 2^53 comes back rounded (or as a `Str`), and a `Dec128` outside binary64 range comes back `Infinity`. Nothing in this design can fix that without replacing ujson.
+
+  **Consumers who need the exactness must call `interpret0` with their own visitor** and implement `visitFloat64StringParts` to build a decimal-aware value. That is the intended integration path and the one xtrasonnet uses. The renderers — and therefore the CLI — are exact; it is only this one convenience overload that is not.
+
+  This is also why ten golden tests are skip-listed in `FileTests.scala`: that harness compares `interpret`'s `ujson.Value`, so it structurally cannot express the values under test. See `UPSTREAM_SYNC.md` → "Known divergences from upstream".
 
 ### Scope: the language core is exact; the standard library is not
 
@@ -64,7 +69,7 @@ This rework applies to the **language core** — literal parsing, the infix oper
 > A `std` function may **round** its result or **fail** on a value outside double range.
 > It may not **change, merge, or drop the caller's own values**.
 
-Concretely, that floor requires exactness in only four places, and everything else in `std` keeps narrowing through `asDouble` exactly as upstream does:
+Concretely, that floor requires exactness in a small enumerable set, and everything else in `std` keeps narrowing through `asDouble` exactly as upstream does:
 
 | Must stay exact | Because narrowing would… |
 |---|---|
@@ -73,6 +78,7 @@ Concretely, that floor requires exactness in only four places, and everything el
 | `std.primitiveEquals` | report two distinct numbers as **equal** |
 | `std.parseInt` / `parseOctal` / `parseHex` | round the integer it was asked to parse |
 | `std.format`'s `%s` (and `std.toString`) | put a **different number** in the output string, and disagree with each other |
+| `std.format`'s `%d` `%i` `%u` `%o` `%x` `%X` | same, for the *integer* conversions: `'%x' % 9223372036854775807` spelled 2^63 |
 
 Number-to-string conversion has more spellings than those two, and **all of them must agree**:
 `std.toString`, `%s`, `%(key)s`, and `+` concatenation with a string. They share
@@ -80,7 +86,13 @@ Number-to-string conversion has more spellings than those two, and **all of them
 half-finish — each has its own fast path, and three of the four were found narrowing
 independently, at which point `'' + n` and `std.toString(n)` disagreed about the same value.
 
-Everything else — `std.sum`, `std.avg`, `std.mod`, `std.modulo`, `std.clamp`, `std.min`/`max`, `std.floor`/`ceil`/`round`/`abs`, all trigonometric/logarithmic functions, and every `std.format` conversion other than `%s` — narrows to `Double`. So `std.sum([0.1, 0.2])` is `0.30000000000000004` while `0.1 + 0.2` is `0.3`, and `std.floor(1e400)` raises `Overflow`. **This is intended, not an oversight.**
+Everything else — `std.sum`, `std.avg`, `std.mod`, `std.modulo`, `std.clamp`, `std.min`/`max`, `std.floor`/`ceil`/`round`/`abs`, and all trigonometric/logarithmic functions — narrows to `Double`. So `std.sum([0.1, 0.2])` is `0.30000000000000004` while `0.1 + 0.2` is `0.3`, and `std.floor(1e400)` raises `Overflow`. **This is intended, not an oversight.**
+
+`std.format` splits along the line C and Python already drew, not along `%s` vs. everything else:
+
+* **Integer conversions — `%d` `%i` `%u` `%o` `%x` `%X` — are exact.** These format an integer in some base; rounding is not their defined behaviour, and Python (whose `%`-formatting `std.format` follows) is arbitrary precision for them. Narrowing them put a *different number* in the output — `'%x' % 9223372036854775807` spelled 2^63 — which is a floor violation, not rounding. Note `'%d' % 1e30` is therefore exactly 10^30 here, where Python prints `1000000000000000019884624838656` because its `1e30` really is a float.
+* **Floating-point conversions — `%e` `%E` `%f` `%F` `%g` `%G` — still narrow**, because rounding to a fixed precision *is* what they are for. `'%.0f' % 1e30` accordingly still shows the binary64 artifact that `'%d'` no longer does.
+* `%c` narrows too: a codepoint has to fit an `Int` regardless.
 
 Rationale:
 

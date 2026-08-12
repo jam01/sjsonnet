@@ -213,6 +213,38 @@ git push origin sjsonnet-<NEW_TAG>-x
 Never force-push over an existing branch of the same name without explicit
 confirmation from the user.
 
+## Known divergences from upstream
+
+Behaviour where this fork deliberately differs from `databricks/sjsonnet`. Each entry is a
+decision, not a bug: **do not "fix" one back toward upstream without asking.** When replaying
+patches (step 3), expect conflicts in these areas and resolve *toward this table*.
+
+The rationale for the numeric entries lives in `madr-better-nums.md`; this is the index.
+
+| Area | Divergence | Why |
+|---|---|---|
+| Numeric core | Literals and the infix operators are exact (`Int64`/`Float64`/`Dec128`) rather than binary64 | `madr-better-nums.md`. Drives every entry below. |
+| Out-of-double range | `1e309` is a valid value, not a parse error; `1e308 + 1e308` succeeds | Upstream raises `Overflow`; exactness is the point of the rework |
+| `std.*` | Deliberately still narrows to `Double` (`std.sum`, `std.mod`, `floor`/`ceil`/`round`, trig) | Scope rule: the core is exact, the stdlib is not. Exact-aggregation belongs in `xtr`. |
+| `std.format` | `%s` and the integer conversions `%d %i %u %o %x %X` are exact; `%e %E %f %F %g %G` narrow | Rounding is defined behaviour for float conversions only. Upstream has doubles only, so its output differs for integers past 2^53. |
+| `Interpreter.interpret` | Returns `ujson.Value`, whose numbers are `Double` — so the convenience overload **narrows**, yielding `Infinity` for out-of-range values and rounding past 2^53 | Not fixable without changing ujson. Use `interpret0(txt, path, visitor)` with a Dec128-aware visitor; that is what xtrasonnet does. |
+| Test harness | 10 goldens skip-listed in `FileTests.scala` because `ujson.Value` cannot express their result | Their goldens are left at upstream's text so a sync drops in clean. Coverage moved to `new_test_suite/decimal_semantics.jsonnet`, which asserts on rendered strings. |
+| Scala Native 2.13 | `-0` produced by arithmetic renders `0`; 2 unit tests + 9 goldens fail on that target only | Toolchain quirk in `NumberMath.signZero`'s `-0.0` literal. Not fixed: the fork targets xtrasonnet (JVM). `Math.copySign(0.0, -1.0)` is the fix if ever needed. |
+| Performance | Upstream's raw-`Double` arithmetic fast paths were removed; all arithmetic routes through `NumberMath` | Correctness by default. The `sjsonnet.floatAsBigDecimal` opt-out is representation-only and, being a system property, is JVM-global — it cannot be scoped per transformer, which is why it is not the answer for mixed workloads. |
+
+### Deliberately not done
+
+- **`std.parseYaml` narrows on ingest** (builds a `ujson.Value` first) and on the JVM throws
+  `NumberFormatException` for `'a: 9223372036854775808'`. Fixing it means rewriting YAML ingest
+  across all three `Platform.scala` files — a rewrite, not a patch. Accepted as-is.
+- **`std.manifestIni` / `std.manifestPythonVars`** round-trip through `Materializer`'s
+  `ujson.Value`, so integers past 2^53 surface as *quoted strings* and `1e400` as `Infinity`,
+  unlike their exact siblings `manifestJson`/`manifestToml`/`manifestYamlDoc`/`manifestXmlJsonml`.
+  Fixing means diverging in `ManifestModule.scala`, an upstream-churned file. Logged, not fixed.
+- **CI (`pr-build.yaml`) is not run by this fork** — it triggers only on pull requests targeting
+  `master`, and this fork pushes integration branches directly. The Native 2.13 failures above are
+  therefore not a CI problem; verify locally per step 6.
+
 ## Ask, don't guess
 
 - Which upstream tag is `NEW_TAG`.
