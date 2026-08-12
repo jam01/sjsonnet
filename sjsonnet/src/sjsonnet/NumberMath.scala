@@ -309,16 +309,38 @@ object NumberMath {
    */
   def compareTo(a: Val.Num, b: Val.Num): Int = (a, b) match {
     case (Int64(_, x), Int64(_, y))   => java.lang.Long.compare(x, y)
-    case (Int64(_, x), Float64(_, y)) => BigDecimal.decimal(x).compare(BigDecimal.decimal(y))
+    case (Int64(_, x), Float64(_, y)) => compareLongToDouble(x, y)
     case (Int64(_, x), Dec128(_, y))  => BigDecimal.decimal(x).compare(y)
 
-    case (Float64(_, x), Int64(_, y))   => BigDecimal.decimal(x).compare(BigDecimal.decimal(y))
+    case (Float64(_, x), Int64(_, y))   => -compareLongToDouble(y, x)
     case (Float64(_, x), Float64(_, y)) => Util.compareDoubles(x, y)
     case (Float64(_, x), Dec128(_, y))  => BigDecimal.decimal(x).compare(y)
 
     case (Dec128(_, x), Int64(_, y))   => x.compare(BigDecimal.decimal(y))
     case (Dec128(_, x), Float64(_, y)) => x.compare(BigDecimal.decimal(y))
     case (Dec128(_, x), Dec128(_, y))  => x.compare(y)
+  }
+
+  /**
+   * Order an exact `Long` against a `Double`, without allocating in the common case.
+   *
+   * Mixing the two representations is ordinary rather than exotic: `std.*` returns [[Val.Float64]]
+   * while ranges, indices and integer literals are [[Val.Int64]], so `std.assertEqual` over arrays
+   * and `std.sort` over mixed sources land here on every element. The `BigDecimal` fallback costs
+   * about 600ns and four objects per comparison, which is why the whole-number case is split out.
+   *
+   * The fast path is not an approximation: a double that is exactly an integer has exactly that
+   * integer as its shortest round-tripping decimal, so `Long.compare` and the `BigDecimal`
+   * comparison agree wherever [[RenderUtils.isExactLongDouble]] holds. Everything it rejects —
+   * fractional values, magnitudes outside `Long`, and `-0.0` — still takes the exact path, so
+   * `-0.0` keeps comparing equal to `0`.
+   *
+   * Nothing here allocates: `l` is a primitive local and `Long.compare` is a static intrinsic.
+   */
+  @inline private def compareLongToDouble(x: Long, y: Double): Int = {
+    val l = y.toLong
+    if (RenderUtils.isExactLongDouble(y, l)) java.lang.Long.compare(x, l)
+    else BigDecimal.decimal(x).compare(BigDecimal.decimal(y))
   }
 
   /** The IEEE-754 sign of an operand, `-0.0` included. */
