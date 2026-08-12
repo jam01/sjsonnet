@@ -1606,7 +1606,7 @@ object Val {
       extends LazyViewArr(pos0, source.length) {
 
     protected def computeAt(index: Int): Val =
-      func.apply2(Val.cachedNum(indexPos, index), source.eval(index), callPos)(
+      func.apply2(Val.cachedInt64(indexPos, index), source.eval(index), callPos)(
         ev,
         TailstrictModeDisabled
       )
@@ -1636,7 +1636,7 @@ object Val {
       extends LazyViewArr(pos0, size) {
 
     protected def computeAt(index: Int): Val =
-      func.apply1(Val.cachedNum(indexPos, index), callPos)(ev, TailstrictModeDisabled)
+      func.apply1(Val.cachedInt64(indexPos, index), callPos)(ev, TailstrictModeDisabled)
 
     override protected def releaseCapturedState(): Unit = {
       func = null
@@ -1666,17 +1666,31 @@ object Val {
 
     @inline private[sjsonnet] def isCompactRange: Boolean = !isMaterialized && !isConcatView
 
-    @inline private[sjsonnet] def doubleAt(i: Int): Double =
-      if (_reversed) (rangeFrom - i).toDouble else (rangeFrom + i).toDouble
+    @inline private[sjsonnet] def doubleAt(i: Int): Double = longAt(i).toDouble
+
+    /**
+     * Range elements are `Int64`, not `Float64`.
+     *
+     * `rangeFrom` and `i` are both `Int`, so every element is a small exact integer — exactly what
+     * [[Int64]] is for. Handing them out as `Float64` would be lossless but ruinous: the moment one
+     * met an integer literal, [[NumberMath]] would promote both to `BigDecimal`, so `[x * 3 for x
+     * in std.range(...)]` allocated two decimals per element. `Int64 ⊗ Int64` stays on
+     * `Math.multiplyExact`.
+     *
+     * [[doubleAt]] survives for the compact-array rendering fast paths, which write a `Double`
+     * straight to the visitor without building a [[Val]] at all.
+     */
+    @inline private[sjsonnet] def longAt(i: Int): Long =
+      if (_reversed) (rangeFrom - i).toLong else (rangeFrom + i).toLong
 
     override def value(i: Int): Val = {
       if (isMaterialized || isConcatView) super.value(i)
-      else Val.cachedNum(pos, doubleAt(i))
+      else Val.cachedInt64(pos, longAt(i))
     }
 
     override def eval(i: Int): Eval = {
       if (isMaterialized || isConcatView) super.eval(i)
-      else Val.cachedNum(pos, doubleAt(i))
+      else Val.cachedInt64(pos, longAt(i))
     }
 
     override def asLazyArray: Array[Eval] = {
@@ -1690,7 +1704,7 @@ object Val {
         val len = _length
         var i = 0
         while (i < len) {
-          out += Val.cachedNum(pos, doubleAt(i))
+          out += Val.cachedInt64(pos, longAt(i))
           i += 1
         }
       }
@@ -1702,7 +1716,7 @@ object Val {
         val len = _length
         var i = 0
         while (i < len) {
-          dest(offset + i) = Val.cachedNum(pos, doubleAt(i))
+          dest(offset + i) = Val.cachedInt64(pos, longAt(i))
           i += 1
         }
         offset + len
@@ -1761,12 +1775,12 @@ object Val {
 
     override def value(i: Int): Val = {
       if (isMaterialized || isConcatView) super.value(i)
-      else Val.cachedNum(pos, (byteData(i) & 0xff).toDouble)
+      else Val.cachedInt64(pos, (byteData(i) & 0xff).toLong)
     }
 
     override def eval(i: Int): Eval = {
       if (isMaterialized || isConcatView) super.eval(i)
-      else Val.cachedNum(pos, (byteData(i) & 0xff).toDouble)
+      else Val.cachedInt64(pos, (byteData(i) & 0xff).toLong)
     }
 
     override def asLazyArray: Array[Eval] = {
@@ -1782,7 +1796,7 @@ object Val {
         val p = pos
         var i = 0
         while (i < len) {
-          out += Val.cachedNum(p, (bytes(i) & 0xff).toDouble)
+          out += Val.cachedInt64(p, (bytes(i) & 0xff).toLong)
           i += 1
         }
       }
@@ -1796,7 +1810,7 @@ object Val {
         val p = pos
         var i = 0
         while (i < len) {
-          dest(offset + i) = Val.cachedNum(p, (bytes(i) & 0xff).toDouble)
+          dest(offset + i) = Val.cachedInt64(p, (bytes(i) & 0xff).toLong)
           i += 1
         }
         offset + len
@@ -1838,7 +1852,7 @@ object Val {
       if ((arr ne null) || isConcatView) super.value(i)
       else {
         checkIndex(i)
-        Val.cachedNum(pos, byteAt(i).toDouble)
+        Val.cachedInt64(pos, byteAt(i).toLong)
       }
     }
 
@@ -1846,7 +1860,7 @@ object Val {
       if ((arr ne null) || isConcatView) super.eval(i)
       else {
         checkIndex(i)
-        Val.cachedNum(pos, byteAt(i).toDouble)
+        Val.cachedInt64(pos, byteAt(i).toLong)
       }
     }
 
@@ -1872,7 +1886,7 @@ object Val {
         val result = new Array[Eval](_length)
         var i = 0
         while (i < result.length) {
-          result(i) = Val.cachedNum(p, byteAt(i).toDouble)
+          result(i) = Val.cachedInt64(p, byteAt(i).toLong)
           i += 1
         }
         arr = result
@@ -1978,7 +1992,7 @@ object Val {
         val result = new Array[Eval](src.length)
         var i = 0
         while (i < src.length) {
-          result(i) = new LazyApply2(func, Val.cachedNum(indexPos, i), src(i), callPos, ev)
+          result(i) = new LazyApply2(func, Val.cachedInt64(indexPos, i), src(i), callPos, ev)
           i += 1
         }
         Arr(pos, result)
@@ -1996,7 +2010,7 @@ object Val {
         val result = new Array[Eval](size)
         var i = 0
         while (i < size) {
-          result(i) = new LazyApply1(func, Val.cachedNum(indexPos, i), callPos, ev)
+          result(i) = new LazyApply1(func, Val.cachedInt64(indexPos, i), callPos, ev)
           i += 1
         }
         Arr(pos, result)

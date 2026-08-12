@@ -309,7 +309,7 @@ object ArrayModule extends AbstractFunctionModule {
     def evalRhs(arr: Eval, x: Eval, ev: EvalScope, pos: Position): Val = {
       var count = 0
       arr.value.asArr.foreach(v => if (ev.equal(v.value, x.value)) count += 1)
-      Val.cachedNum(pos, count.toDouble)
+      Val.cachedInt64(pos, count.toLong)
     }
   }
 
@@ -449,7 +449,7 @@ object ArrayModule extends AbstractFunctionModule {
       while (i < arr.length) {
         if (ev.equal(arr.value(i), value.value)) {
           val finalI = i
-          b.+=(Val.cachedNum(pos, finalI))
+          b.+=(Val.cachedInt64(pos, finalI))
         }
         i += 1
       }
