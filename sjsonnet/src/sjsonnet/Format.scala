@@ -791,10 +791,13 @@ object Format {
               // well. Every other conversion uses it exactly once.
               def s: Double = vn.asDouble
               formatted.conversion match {
-                case 'd' | 'i' | 'u' => formatInteger(formatted, s)
-                case 'o'             => formatOctal(formatted, s)
-                case 'x'             => formatHexadecimal(formatted, s)
-                case 'X'             => formatHexadecimal(formatted, s).toUpperCase
+                // Integer conversions are exact: rounding is not their defined behaviour the way
+                // it is for %e/%f/%g, and Python — whose semantics these follow — is arbitrary
+                // precision here. Narrowing made `'%x' % 9223372036854775807` spell 2^63.
+                case 'd' | 'i' | 'u' => formatInteger(formatted, vn)
+                case 'o'             => formatOctal(formatted, vn)
+                case 'x'             => formatHexadecimal(formatted, vn)
+                case 'X'             => formatHexadecimal(formatted, vn).toUpperCase
                 case 'e'             => formatExponent(formatted, s).toLowerCase
                 case 'E'             => formatExponent(formatted, s)
                 case 'f' | 'F'       => formatFloat(formatted, s)
@@ -811,8 +814,9 @@ object Format {
                 case 's' =>
                   // `%s` stringifies a value the way Jsonnet itself does, so it must agree with
                   // `std.toString` — narrowing here would put a *different* number in the output
-                  // string (`'%s' % 9223372036854775807` spelled it …808). The Python-semantics
-                  // conversions above stay Double-domain: rounding is their defined behaviour.
+                  // string (`'%s' % 9223372036854775807` spelled it …808). Only the real
+                  // floating-point conversions (%e %E %f %F %g %G) stay Double-domain, where
+                  // rounding to a fixed precision is the defined behaviour.
                   formatString(formatted, RenderUtils.renderNum(vn))
                 case _ =>
                   Error.fail(
@@ -1106,8 +1110,14 @@ object Format {
   // floating-point formats preserve the sign bit of -0.0 even though -0.0 == 0.0.
   private def isNegative(s: Double): Boolean = s < 0 || (s == 0.0 && 1.0 / s < 0)
 
+  // Two entry points per integer conversion: the `Val.Num` one is exact (see
+  // RenderUtils.truncatedNumDigits); the `Double` one serves `formatBoolean`, whose numeric value
+  // is only ever 0 or 1.
+  private def formatInteger(formatted: FormatSpec, n: Val.Num): String =
+    formatIntegralRadix(formatted, RenderUtils.truncatedNumDigits(n, 10), _ => "")
+
   private def formatInteger(formatted: FormatSpec, s: Double): String = {
-    formatIntegralRadix(formatted, s, 10, _ => "")
+    formatIntegralRadix(formatted, RenderUtils.truncatedDoubleDigits(s, 10), _ => "")
   }
 
   private def formatFloat(formatted: FormatSpec, s: Double): String = {
@@ -1129,30 +1139,31 @@ object Format {
 
   }
 
+  private def octalPrefix(formatted: FormatSpec): String => String =
+    rhs => if (!formatted.alternate || rhs.charAt(0) == '0') "" else "0"
+
+  private def hexPrefix(formatted: FormatSpec): String => String =
+    _ => if (!formatted.alternate) "" else "0x"
+
+  private def formatOctal(formatted: FormatSpec, n: Val.Num): String =
+    formatIntegralRadix(formatted, RenderUtils.truncatedNumDigits(n, 8), octalPrefix(formatted))
+
   private def formatOctal(formatted: FormatSpec, s: Double): String = {
-    formatIntegralRadix(
-      formatted,
-      s,
-      8,
-      rhs => if (!formatted.alternate || rhs.charAt(0) == '0') "" else "0"
-    )
+    formatIntegralRadix(formatted, RenderUtils.truncatedDoubleDigits(s, 8), octalPrefix(formatted))
   }
 
+  private def formatHexadecimal(formatted: FormatSpec, n: Val.Num): String =
+    formatIntegralRadix(formatted, RenderUtils.truncatedNumDigits(n, 16), hexPrefix(formatted))
+
   private def formatHexadecimal(formatted: FormatSpec, s: Double): String = {
-    formatIntegralRadix(
-      formatted,
-      s,
-      16,
-      _ => if (!formatted.alternate) "" else "0x"
-    )
+    formatIntegralRadix(formatted, RenderUtils.truncatedDoubleDigits(s, 16), hexPrefix(formatted))
   }
 
   private def formatIntegralRadix(
       formatted: FormatSpec,
-      s: Double,
-      radix: Int,
+      digits: (Boolean, String),
       prefix: String => String): String = {
-    val (negative, rhs) = RenderUtils.truncatedDoubleDigits(s, radix)
+    val (negative, rhs) = digits
     val lhs = if (negative) "-" else ""
     val rhs2 = precisionPad(lhs, rhs, formatted.precisionValue)
     widen(

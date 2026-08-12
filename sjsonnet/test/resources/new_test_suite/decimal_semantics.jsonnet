@@ -97,6 +97,32 @@ agree(1e400, "1e+400") &&
 agree(0.1 + 0.2, "0.3") &&
 agree(-0, "-0") &&
 
+// --- Integer format conversions are exact; float ones are not ---------------------------------
+// %d %i %u %o %x %X are *integer* conversions — rounding is not their defined behaviour the way
+// it is for %e %f %g, and Python (whose %-formatting these follow) is arbitrary precision here.
+// Narrowing them through asDouble made '%x' % 9223372036854775807 spell 2^63, a different number.
+std.assertEqual('%d' % 9223372036854775807, "9223372036854775807") &&
+std.assertEqual('%i' % 9223372036854775807, "9223372036854775807") &&
+std.assertEqual('%u' % 9223372036854775807, "9223372036854775807") &&
+std.assertEqual('%x' % 9223372036854775807, "7fffffffffffffff") &&
+std.assertEqual('%X' % 9223372036854775807, "7FFFFFFFFFFFFFFF") &&
+std.assertEqual('%o' % 9223372036854775807, "777777777777777777777") &&
+std.assertEqual('%d' % 9007199254740993, "9007199254740993") &&
+// Past Long range, and past what any double could hold.
+std.assertEqual('%d' % 123456789012345678901234567890, "123456789012345678901234567890") &&
+std.assertEqual('%d' % -9223372036854775808, "-9223372036854775808") &&
+// Truncation toward zero, matching Python's '%d' % -3.7 == '-3'.
+std.assertEqual('%d' % 3.7, "3") &&
+std.assertEqual('%d' % -3.7, "-3") &&
+// Flags and padding still apply on top of the exact digits.
+std.assertEqual('%05d' % 42, "00042") &&
+std.assertEqual('%#x' % 255, "0xff") &&
+// The floating-point conversions deliberately still narrow to binary64.
+std.assertEqual('%e' % 9223372036854775807, "9.223372e+18") &&
+std.assertEqual('%.0f' % 1e30, "1000000000000000019884624838656") &&
+// ...while the integer conversion of that same literal is exactly 10^30.
+std.assertEqual('%d' % 1e30, "1000000000000000000000000000000") &&
+
 // --- std.* keeps upstream's Double semantics, on purpose --------------------------------------
 // Per madr-better-nums.md, "Scope: the language core is exact; the standard library is not". The
 // operators are exact; std functions narrow. This asymmetry is the decision, not an oversight —

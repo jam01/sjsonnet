@@ -748,6 +748,30 @@ object RenderUtils {
     }
   }
 
+  /**
+   * Digits of `n` truncated toward zero, in `radix`, as `(isNegative, magnitudeDigits)`.
+   *
+   * [[truncatedDoubleDigits]] for any [[Val.Num]], and exact for the representations that can be:
+   * `%d`/`%i`/`%u`/`%o`/`%x`/`%X` are *integer* conversions, so unlike `%e`/`%f`/`%g` rounding is
+   * not their defined behaviour — going through `asDouble` first made `'%x' % 9223372036854775807`
+   * spell 2^63, a different number. Python, whose `%`-formatting these follow, is arbitrary
+   * precision here.
+   */
+  private[sjsonnet] def truncatedNumDigits(n: Val.Num, radix: Int): (Boolean, String) = n match {
+    case Val.Int64(_, l) =>
+      // Long.MinValue has no positive Long counterpart, so its magnitude needs BigInt.
+      if (l == Long.MinValue) (true, BigInt(l).abs.toString(radix))
+      else {
+        val negative = l < 0
+        (negative, java.lang.Long.toString(if (negative) -l else l, radix))
+      }
+    case Val.Float64(_, d) => truncatedDoubleDigits(d, radix)
+    case Val.Dec128(_, bd) =>
+      // `toBigInteger` truncates toward zero, matching Python's `'%d' % -3.7 == '-3'`.
+      val i = BigInt(bd.bigDecimal.toBigInteger)
+      (i.signum < 0, i.abs.toString(radix))
+  }
+
   private[sjsonnet] def truncatedDoubleToString(d: Double): String = {
     val (negative, digits) = truncatedDoubleDigits(d, 10)
     if (negative) "-" + digits else digits
