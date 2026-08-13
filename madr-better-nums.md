@@ -40,7 +40,10 @@ Opt-out — `-Dsjsonnet.floatAsBigDecimal=false`:
 * Non-integer **literals** parse as `Float64` instead of `Dec128`, trading exactness for the lower
   allocation cost of a boxed double. Only literals a double can hold within 17 significant digits
   and an exponent in `[-325, 325]` are admitted (`NumberMath.allowFloat64LiteralWithIndexes`);
-  anything else still parses as `Dec128`, so the flag can lose precision but cannot lose magnitude.
+  anything else still parses as `Dec128`. That bounds what a *literal* loses, but not what
+  arithmetic on it loses: `1e308` is admitted, and `1e308 + 1e308` overflows binary64, so under the
+  opt-out it raises `Overflow` where the default gives `2e+308`. The flag costs magnitude as well
+  as precision — it restores upstream's range limits along with upstream's answers.
 * The flag is a **parsing switch, but its effect is not confined to parsing**, because `Float64`
   arithmetic is IEEE-754 (see below). Making literals `Float64` therefore makes ordinary literal
   arithmetic binary64 too: `0.1 + 0.2` is `0.3` by default and `0.30000000000000004` under the
