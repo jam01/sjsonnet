@@ -10,118 +10,34 @@ import scala.util.control.NonFatal
  * Cross-representation arithmetic and ordering for the three [[Val.Num]] representations
  * ([[Val.Int64]], [[Val.Float64]], [[Val.Dec128]]).
  *
- * Within the exact tiers, operands are promoted to the most precise representation needed to
- * preserve correctness: `Int64` stays `Int64` while the exact result fits in a `Long`, and mixing
- * or overflowing widens to `Dec128` (`BigDecimal` at `MathContext.DECIMAL128`).
+ * Operands are promoted to the most precise representation needed to preserve correctness: `Int64`
+ * stays `Int64` while the exact result fits in a `Long`, and anything mixing or overflowing widens
+ * to `Dec128` (`BigDecimal` at `MathContext.DECIMAL128`).
  *
- * `Float64` is not one of those tiers, and **one `Float64` operand makes the whole operation
- * IEEE-754** — upstream sjsonnet's arithmetic, on operands reduced by [[asDouble]]. Inexactness is
- * a property of the value, so it propagates rather than being re-exactified by the next literal it
- * meets. Promoting instead would do exact decimal work on operands that never carried decimal
- * meaning: `BigDecimal.decimal(d)` reinterprets a double as its shortest round-tripping decimal, so
- * `std.sqrt(2) * std.sqrt(2)` came out as `2.00000000000000014481069235364401` — 33 digits
- * manufactured from a value with ~16 significant ones, where the double answer is
- * `2.0000000000000004`. Confining raw arithmetic to *both* operands being `Float64` was tried and
- * is worse: it splits `x + x` from `x * 2`, since the latter re-enters the exact core.
+ * **Exactness wins, unconditionally.** A [[Val.Float64]] operand is promoted like any other, so a
+ * `Float64` never survives an operation — it is an input representation only, arriving from `std`
+ * results, from `-0`, or from an embedder. Promotion is not merely "keep more mantissa bits":
+ * `BigDecimal.decimal(d)` reinterprets a double as its shortest round-tripping decimal, so it
+ * changes the answer (`0.1 + 0.2` is `0.30000000000000004` raw and `0.3` promoted). `%` is the
+ * non-obvious one — IEEE `fmod` is binary-exact and so looks safe, yet `0.3 % 0.1` is
+ * `0.09999999999999998` raw and `0` promoted.
  *
- * Under the default `sjsonnet.floatAsBigDecimal=true` this reaches only `std` results and `-0.0`,
- * because every non-integer literal is a `Dec128` — `0.1 + 0.2` is still `0.3`. Under the opt-out
- * literals are `Float64` too, so `0.1 + 0.2` is `0.30000000000000004` and `0.3 % 0.1` is
- * `0.09999999999999998`: opting out of `BigDecimal` now opts out of its answers, which is what
- * upstream produces and what the flag's name implies.
+ * The alternative, letting a `Float64` operand make the whole operation IEEE-754, was implemented
+ * and reverted: it means one `std.sqrt` poisons every value downstream of it with no way back to
+ * exactness, which is the wrong failure for a transformation tool. The cost of promoting instead is
+ * that exact arithmetic over an already-inexact operand looks more precise than it is —
+ * `std.sqrt(2) * std.sqrt(2)` is `2.00000000000000014481069235364401`. `std` is inexact by design
+ * (`madr-better-nums.md`); reach for `xtr` when the value matters.
  *
- * Comparison never needed promotion in either direction — `decimal()` is order-preserving.
+ * Comparison never needs promotion — `decimal()` is order-preserving.
  *
- * PERF: the exact paths are the slow ones, and all Jsonnet arithmetic over `Int64`/`Dec128` routes
- * through them. The [[Evaluator]]'s raw-`Double` fast paths survive only for comparisons and for
- * bitwise/shift ops, which force their operands through `asSafeLong` anyway.
+ * PERF: these are the exact-but-slow paths, and all Jsonnet arithmetic routes through them
+ * regardless of representation. The [[Evaluator]]'s raw-`Double` fast paths survive only for
+ * comparisons and for bitwise/shift ops, which force their operands through `asSafeLong` anyway.
  *
  * PERF: Consider demoting resulting numbers.
  */
 object NumberMath {
-
-  /**
-   * Reduces `a` and `b` to `Double` for an operation that a [[Val.Float64]] operand has made
-   * inexact. See the class scaladoc for why one such operand decides the whole operation.
-   *
-   * A `Dec128` outside binary64's range collapses to an infinity here, and [[Val.Float64]] rejects
-   * those at construction, so `1e400 * std.sqrt(2)` raises `Overflow` where `1e400 * 2` stays
-   * exact. That is the same trade upstream makes for every number it holds.
-   */
-  @inline private def asDouble(a: Val.Num): Double = a match {
-    case Int64(_, x)   => x.toDouble
-    case Float64(_, x) => x
-    case Dec128(_, x)  => x.toDouble
-  }
-
-  /**
-   * Whether the literal text `s0` (with `.` at `dotIndex` and `e`/`E` at `expIndex`, or -1 when
-   * absent) is safely representable as an IEEE-754 double: at most `maxSig` significant mantissa
-   * digits and an exponent within `[minExp, maxExp]`.
-   */
-  private[sjsonnet] def allowFloat64LiteralWithIndexes(
-      s0: CharSequence,
-      dotIndex: Int,
-      expIndex: Int,
-      maxSig: Int = 17,
-      minExp: Int = -325,
-      maxExp: Int = 325): Boolean = {
-    val s = s0
-    val n = s.length()
-
-    // mantissa scan range: [start, stop)
-    var i = 0
-    if (i < n) {
-      val c = s.charAt(0)
-      if (c == '+' || c == '-') i = 1
-    }
-    val stop = if (expIndex >= 0) expIndex else n
-
-    // Count significant digits in mantissa (ignore '.', ignore leading zeros)
-    var sig = 0
-    var seenNonZero = false
-    while (i < stop) {
-      val c = s.charAt(i)
-      if (c != '.') {
-        // assume digits only here (parser already validated)
-        if (seenNonZero) {
-          sig += 1
-          if (sig > maxSig) return false
-        } else if (c != '0') {
-          seenNonZero = true
-          sig = 1
-        }
-      }
-      i += 1
-    }
-
-    // Exponent bounds check (only if exp exists)
-    if (expIndex >= 0) {
-      var j = expIndex + 1
-      if (j >= n) return false // malformed, but be defensive
-
-      var sign = 1
-      val c0 = s.charAt(j)
-      if (c0 == '+') j += 1
-      else if (c0 == '-') {
-        sign = -1
-        j += 1
-      }
-
-      // parse exponent digits with early bound checks
-      var exp = 0
-      while (j < n) {
-        val d = s.charAt(j) - '0'
-        exp = exp * 10 + d
-        // early exit if already out of bounds
-        val signed = exp * sign
-        if (signed < minExp || signed > maxExp) return false
-        j += 1
-      }
-    }
-
-    true
-  }
 
   def add(pos: Position, a: Val.Num, b: Val.Num)(implicit ev: EvalScope): Val.Num = {
     try {
@@ -136,12 +52,17 @@ object NumberMath {
     case (Int64(_, x), Int64(_, y)) =>
       try { Math.addExact(x, y) }
       catch { case _: ArithmeticException => BigDecimal.decimal(x) + BigDecimal.decimal(y) }
+    case (Int64(_, x), Float64(_, y)) => BigDecimal.decimal(x) + BigDecimal.decimal(y)
     case (Int64(_, x), Dec128(_, y))  => BigDecimal.decimal(x) + y // Promote to BigDecimal
-    case (Dec128(_, x), Int64(_, y))  => x + BigDecimal.decimal(y)
-    case (Dec128(_, x), Dec128(_, y)) => x + y // Val.Dec128 handles precision
 
-    // A Float64 operand makes the operation IEEE-754; see the class scaladoc.
-    case (_: Float64, _) | (_, _: Float64) => asDouble(a) + asDouble(b)
+    case (Float64(_, x), Int64(_, y))   => BigDecimal.decimal(x) + BigDecimal.decimal(y)
+    case (Float64(_, x), Float64(_, y)) =>
+      BigDecimal.decimal(x) + BigDecimal.decimal(y)
+    case (Float64(_, x), Dec128(_, y)) => BigDecimal.decimal(x) + y // Promote to Val.Dec128
+
+    case (Dec128(_, x), Int64(_, y))   => x + BigDecimal.decimal(y)
+    case (Dec128(_, x), Float64(_, y)) => x + BigDecimal.decimal(y)
+    case (Dec128(_, x), Dec128(_, y))  => x + y // Val.Dec128 handles precision
   }
 
   def subtract(pos: Position, a: Val.Num, b: Val.Num)(implicit ev: EvalScope): Val.Num = {
@@ -157,12 +78,17 @@ object NumberMath {
     case (Int64(_, x), Int64(_, y)) =>
       try { Math.subtractExact(x, y) }
       catch { case _: ArithmeticException => BigDecimal.decimal(x) - BigDecimal.decimal(y) }
+    case (Int64(_, x), Float64(_, y)) => BigDecimal.decimal(x) - BigDecimal.decimal(y)
     case (Int64(_, x), Dec128(_, y))  => BigDecimal.decimal(x) - y
-    case (Dec128(_, x), Int64(_, y))  => x - BigDecimal.decimal(y)
-    case (Dec128(_, x), Dec128(_, y)) => x - y
 
-    // A Float64 operand makes the operation IEEE-754; see the class scaladoc.
-    case (_: Float64, _) | (_, _: Float64) => asDouble(a) - asDouble(b)
+    case (Float64(_, x), Int64(_, y))   => BigDecimal.decimal(x) - BigDecimal.decimal(y)
+    case (Float64(_, x), Float64(_, y)) =>
+      BigDecimal.decimal(x) - BigDecimal.decimal(y)
+    case (Float64(_, x), Dec128(_, y)) => BigDecimal.decimal(x) - y
+
+    case (Dec128(_, x), Int64(_, y))   => x - BigDecimal.decimal(y)
+    case (Dec128(_, x), Float64(_, y)) => x - BigDecimal.decimal(y)
+    case (Dec128(_, x), Dec128(_, y))  => x - y
   }
 
   def multiply(pos: Position, a: Val.Num, b: Val.Num)(implicit ev: EvalScope): Val.Num = {
@@ -178,12 +104,17 @@ object NumberMath {
     case (Int64(_, x), Int64(_, y)) =>
       try { Math.multiplyExact(x, y) }
       catch { case _: ArithmeticException => BigDecimal.decimal(x) * BigDecimal.decimal(y) }
+    case (Int64(_, x), Float64(_, y)) => BigDecimal.decimal(x) * BigDecimal.decimal(y)
     case (Int64(_, x), Dec128(_, y))  => BigDecimal.decimal(x) * y
-    case (Dec128(_, x), Int64(_, y))  => x * BigDecimal.decimal(y)
-    case (Dec128(_, x), Dec128(_, y)) => x * y
 
-    // A Float64 operand makes the operation IEEE-754; see the class scaladoc.
-    case (_: Float64, _) | (_, _: Float64) => asDouble(a) * asDouble(b)
+    case (Float64(_, x), Int64(_, y))   => BigDecimal.decimal(x) * BigDecimal.decimal(y)
+    case (Float64(_, x), Float64(_, y)) =>
+      BigDecimal.decimal(x) * BigDecimal.decimal(y)
+    case (Float64(_, x), Dec128(_, y)) => BigDecimal.decimal(x) * y
+
+    case (Dec128(_, x), Int64(_, y))   => x * BigDecimal.decimal(y)
+    case (Dec128(_, x), Float64(_, y)) => x * BigDecimal.decimal(y)
+    case (Dec128(_, x), Dec128(_, y))  => x * y
   }
 
   def divide(pos: Position, a: Val.Num, b: Val.Num)(implicit ev: EvalScope): Val.Num = {
@@ -205,12 +136,21 @@ object NumberMath {
         if (exact != null) exact
         else BigDecimal.decimal(x) / BigDecimal.decimal(y)
       }
-    case (Int64(_, x), Dec128(_, y))  => divideExact(BigDecimal.decimal(x), y)
-    case (Dec128(_, x), Int64(_, y))  => divideExact(x, BigDecimal.decimal(y))
-    case (Dec128(_, x), Dec128(_, y)) => divideExact(x, y) // BigDecimal handles precision
+    case (Int64(_, x), Float64(_, y)) => divideExact(BigDecimal.decimal(x), BigDecimal.decimal(y))
+    case (Int64(_, x), Dec128(_, y))  =>
+      divideExact(BigDecimal.decimal(x), y) // Promote to BigDecimal
 
-    // A Float64 operand makes the operation IEEE-754; see the class scaladoc.
-    case (_: Float64, _) | (_, _: Float64) => asDouble(a) / asDouble(b)
+    case (Float64(_, x), Int64(_, y))   => divideExact(BigDecimal.decimal(x), BigDecimal.decimal(y))
+    case (Float64(_, x), Float64(_, y)) =>
+      divideExact(BigDecimal.decimal(x), BigDecimal.decimal(y))
+    case (Float64(_, x), Dec128(_, y)) =>
+      divideExact(BigDecimal.decimal(x), y) // Promote to BigDecimal
+
+    case (Dec128(_, x), Int64(_, y)) =>
+      divideExact(x, BigDecimal.decimal(y)) // Promote to BigDecimal
+    case (Dec128(_, x), Float64(_, y)) =>
+      divideExact(x, BigDecimal.decimal(y)) // Promote to BigDecimal
+    case (Dec128(_, x), Dec128(_, y)) => divideExact(x, y) // BigDecimal handles precision
   }
 
   /** The range a `Long` can hold and still survive one more `* 10`. */
@@ -321,14 +261,17 @@ object NumberMath {
     // Int64 % Int64 is exact in `Long` and cannot overflow (|x % y| < |y|), so it skips BigDecimal
     // entirely — this is the hot path for the `%` operator over integers.
     case (Int64(_, x), Int64(_, y))   => x % y
+    case (Int64(_, x), Float64(_, y)) => remainder(BigDecimal.decimal(x), BigDecimal.decimal(y))
     case (Int64(_, x), Dec128(_, y))  => remainder(BigDecimal.decimal(x), y)
-    case (Dec128(_, x), Int64(_, y))  => remainder(x, BigDecimal.decimal(y))
-    case (Dec128(_, x), Dec128(_, y)) => remainder(x, y)
 
-    // A Float64 operand makes the operation IEEE-754; see the class scaladoc. `fmod` is always
-    // binary-exact, so unlike the other operators this one is exact either way — it still goes raw,
-    // because `0.3 % 0.1` must agree with the `0.3 - 0.1 - 0.1 - 0.1` its operands would produce.
-    case (_: Float64, _) | (_, _: Float64) => asDouble(a) % asDouble(b)
+    case (Float64(_, x), Int64(_, y))   => remainder(BigDecimal.decimal(x), BigDecimal.decimal(y))
+    case (Float64(_, x), Float64(_, y)) =>
+      remainder(BigDecimal.decimal(x), BigDecimal.decimal(y))
+    case (Float64(_, x), Dec128(_, y)) => remainder(BigDecimal.decimal(x), y)
+
+    case (Dec128(_, x), Int64(_, y))   => remainder(x, BigDecimal.decimal(y))
+    case (Dec128(_, x), Float64(_, y)) => remainder(x, BigDecimal.decimal(y))
+    case (Dec128(_, x), Dec128(_, y))  => remainder(x, y)
   }
 
   /**
@@ -434,7 +377,7 @@ object NumberMath {
   }
 
   /** The IEEE-754 sign of an operand, `-0.0` included. */
-  private def isNegative(n: Val.Num): Boolean = n match {
+  private[sjsonnet] def isNegative(n: Val.Num): Boolean = n match {
     case Int64(_, x)   => x < 0
     case Float64(_, x) => java.lang.Double.doubleToRawLongBits(x) < 0
     case Dec128(_, x)  => x.signum < 0

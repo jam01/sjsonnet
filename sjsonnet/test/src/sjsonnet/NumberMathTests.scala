@@ -168,41 +168,6 @@ object NumberMathTests extends TestSuite {
         assertKind(evalNum("1 + 0.5"), "dec128")
       }
 
-      test("a Float64 operand makes the whole operation IEEE-754") {
-        // Under the default floatAsBigDecimal=true the only Float64s are std results and -0, so
-        // std.sqrt is the way in. Promoting one does exact decimal work on an operand that never
-        // carried decimal meaning: this used to spell 2.00000000000000014481069235364401, 33
-        // digits manufactured from a value with ~16 significant ones.
-        render(evalNum("std.sqrt(2) * std.sqrt(2)")) ==> "2.0000000000000004"
-        assertKind(evalNum("std.sqrt(2) * std.sqrt(2)"), "float64")
-      }
-
-      test("inexactness propagates instead of being re-exactified") {
-        // Five spellings of 2*sqrt(2), which must agree. Confining raw arithmetic to
-        // both-operands-Float64 split the first from the rest, because every other spelling
-        // re-entered the exact core the moment it met a literal.
-        val doubled = "2.8284271247461903"
-        render(evalNum("std.sqrt(2) + std.sqrt(2)")) ==> doubled
-        render(evalNum("std.sqrt(2) * 2")) ==> doubled
-        render(evalNum("std.sqrt(2) * 2.0")) ==> doubled
-        render(evalNum("2 * std.sqrt(2)")) ==> doubled
-        render(evalNum("2.0 * std.sqrt(2)")) ==> doubled
-        assertKind(evalNum("std.sqrt(2) * 2"), "float64")
-        assertKind(evalNum("2.0 * std.sqrt(2)"), "float64")
-        // Subtraction, division and modulo take the same route.
-        render(evalNum("std.sqrt(2) / 2")) ==> "0.7071067811865476"
-        render(evalNum("std.floor(7.5) % 2")) ==> "1"
-        render(evalNum("std.sum([0.1, 0.2]) * 10")) ==> "3.0000000000000004"
-      }
-
-      test("the exact tiers are untouched by the float rule") {
-        // Literals are Dec128, so nothing above changes what ordinary arithmetic spells.
-        render(evalNum("0.1 + 0.2")) ==> "0.3"
-        render(evalNum("9223372036854775807 + 1")) ==> "9223372036854775808"
-        assertKind(evalNum("0.1 + 0.2"), "dec128")
-        assertKind(evalNum("2 * 3"), "int64")
-      }
-
       test("results outside binary64 range are constructible") {
         render(evalNum("1e308 + 1e308")) ==> "2e+308"
         render(evalNum("1e300 * 1000000000")) ==> "1e+309"
@@ -270,32 +235,6 @@ object NumberMathTests extends TestSuite {
       test("std.setUnion does not merge distinct values") {
         renderExpr("std.setUnion([9007199254740993], [9007199254740994])") ==>
         "[9007199254740993, 9007199254740994]"
-      }
-    }
-
-    test("float64 literal admission") {
-      // allowFloat64LiteralWithIndexes decides whether a literal is safe for the Float64
-      // representation opt-out (sjsonnet.floatAsBigDecimal=false). It is a text predicate: at
-      // most 17 significant mantissa digits, exponent within [-325, 325].
-      def ok(s: String): Unit = {
-        val (dot, exp) = indices(s)
-        assert(NumberMath.allowFloat64LiteralWithIndexes(s, dot, exp))
-      }
-      def bad(s: String): Unit = {
-        val (dot, exp) = indices(s)
-        assert(!NumberMath.allowFloat64LiteralWithIndexes(s, dot, exp))
-      }
-
-      test("short mantissas are admitted") { ok("0.1") }
-      test("signed literals are admitted") { ok("-0.1") }
-      test("long mantissas are rejected") { bad("1.23456789012345678") }
-      test("leading zeros are not significant digits") { ok("000.0001") }
-      test("all-zero forms are admitted") {
-        for (s <- Seq("0", "0.0", "0000.0000")) ok(s)
-      }
-      test("exponent bounds are inclusive") {
-        ok("1e+325"); bad("1e+326")
-        ok("1e-325"); bad("1e-326")
       }
     }
 
@@ -380,11 +319,4 @@ object NumberMathTests extends TestSuite {
 
   private def assertNumEq(a: Val.Num, b: Val.Num): Unit =
     assert(NumberMath.compareTo(a, b) == 0, s"Expected equal: $a vs $b")
-
-  private def indices(s: String): (Int, Int) = (
-    s.indexOf('.'), {
-      val lower = s.indexOf('e')
-      if (lower >= 0) lower else s.indexOf('E')
-    }
-  )
 }

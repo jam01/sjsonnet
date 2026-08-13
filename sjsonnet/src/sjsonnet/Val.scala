@@ -517,7 +517,7 @@ object Val {
    *     This is the default for non-integer literals.
    *
    * See `madr-better-nums.md` for the rationale. All arithmetic across representations lives in
-   * [[NumberMath]], where a single [[Float64]] operand makes the whole operation IEEE-754.
+   * [[NumberMath]], including the all-[[Float64]] case — see `NumberMath.promoteFloat64Arithmetic`.
    */
   sealed abstract class Num extends Literal {
     def prettyName = "number"
@@ -570,16 +570,11 @@ object Val {
       apply(pos, s, s.indexOf('.'), indexOfExponent(s))
 
     /**
-     * `false` selects the performance opt-out described in the MADR: non-integer literals that a
-     * double can hold exactly enough (see [[NumberMath.allowFloat64LiteralWithIndexes]]) parse as
-     * [[Float64]] instead of [[Dec128]].
-     */
-    private val floatAsBigDecimal: Boolean =
-      sys.props.getOrElse("sjsonnet.floatAsBigDecimal", "true").toBoolean
-
-    /**
      * Builds a number from its literal text. `decIndex`/`expIndex` are the offsets of `.` and
      * `e`/`E` within `s`, or -1 when absent; `s` must already have any digit separators stripped.
+     *
+     * Every non-integer literal is a [[Dec128]] — there is no float literal mode. Exactness is the
+     * product, so it is not switchable; see `madr-better-nums.md`.
      */
     def apply(pos: Position, s: String, decIndex: Int, expIndex: Int): Num = {
       // Negative zero is the one value only Float64 can carry: `Long` has no signed zero and
@@ -593,10 +588,6 @@ object Val {
           // widened to Double); Dec128 keeps them exact up to 34 significant digits.
           case _: NumberFormatException => dec128(pos, s)
         }
-      } else if (floatAsBigDecimal) dec128(pos, s)
-      else if (NumberMath.allowFloat64LiteralWithIndexes(s, decIndex, expIndex)) {
-        val d = java.lang.Double.parseDouble(s)
-        if (d.isNaN || d.isInfinite) dec128(pos, s) else Float64(pos, d)
       } else dec128(pos, s)
     }
 

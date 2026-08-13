@@ -158,23 +158,38 @@ std.assertEqual('%d' % 1e30, "1000000000000000000000000000000") &&
 // --- std.* keeps upstream's Double semantics, on purpose --------------------------------------
 // Per madr-better-nums.md, "Scope: the language core is exact; the standard library is not". The
 // operators are exact; std functions narrow. This asymmetry is the decision, not an oversight —
-// pinned here so a future change to it is deliberate rather than accidental.
+// pinned here so a future change to it is deliberate rather than accidental. Exactness beyond
+// what std offers is xtr's job.
 std.assertEqual(std.toString(std.sum([0.1, 0.2])), "0.30000000000000004") &&
 std.assertEqual(std.toString(0.1 + 0.2), "0.3") &&
-// A std result is a Float64, and that inexactness propagates: one Float64 operand makes the whole
-// operation IEEE-754, so downstream arithmetic stays on upstream's answers rather than being
-// re-exactified by the next literal it meets.
-std.assertEqual(std.toString(std.sum([0.1, 0.2]) * 10), "3.0000000000000004") &&
-std.assertEqual(std.toString(std.sqrt(2) * std.sqrt(2)), "2.0000000000000004") &&
-// All five spellings of 2*sqrt(2) agree, whichever side the Float64 is on and whether the other
-// operand is an Int64 or a Dec128.
-std.assertEqual(std.toString(std.sqrt(2) + std.sqrt(2)), "2.8284271247461903") &&
-std.assertEqual(std.toString(std.sqrt(2) * 2), "2.8284271247461903") &&
-std.assertEqual(std.toString(std.sqrt(2) * 2.0), "2.8284271247461903") &&
-std.assertEqual(std.toString(2 * std.sqrt(2)), "2.8284271247461903") &&
-std.assertEqual(std.toString(2.0 * std.sqrt(2)), "2.8284271247461903") &&
-// Contagion never reaches an expression without a Float64 in it.
-std.assertEqual(std.toString(1e308 + 1e308), "2e+308") &&
-std.assertEqual(std.toString(1 / 3 * 3), "0.9999999999999999999999999999999999") &&
+// A std result is inexact, and exact arithmetic over it stays precise-looking without being
+// upstream-identical. Both of these are the same phenomenon, not two separate quirks.
+std.assertEqual(std.toString(std.sqrt(2) * std.sqrt(2)), "2.00000000000000014481069235364401") &&
+std.assertEqual(std.toString(std.sqrt(2) * 2), "2.8284271247461902") &&
+// Exactness wins unconditionally, so the same quantity has one spelling however it is reached.
+std.assertEqual(std.sqrt(2) + std.sqrt(2), std.sqrt(2) * 2) &&
+std.assertEqual(std.sqrt(2) * 2, std.sqrt(2) * 2.0) &&
+
+// --- ...except where a std function would answer with a number that was never an input --------
+// Narrowing a value the function is supposed to leave alone is not "std is inexact", it is a
+// no-op being destructive. 2^53+1 is exact as an Int64 and unrepresentable as a Double.
+std.assertEqual(std.toString(std.max(9007199254740993, 1)), "9007199254740993") &&
+std.assertEqual(std.toString(std.min(9007199254740993, 9007199254740994)), "9007199254740993") &&
+std.assertEqual(std.toString(std.abs(9007199254740993)), "9007199254740993") &&
+std.assertEqual(std.toString(std.floor(9007199254740993)), "9007199254740993") &&
+std.assertEqual(std.toString(std.ceil(9007199254740993)), "9007199254740993") &&
+std.assertEqual(std.toString(std.round(9007199254740993)), "9007199254740993") &&
+std.assertEqual(std.toString(std.clamp(9007199254740993, 0, 9999999999999999999)), "9007199254740993") &&
+// Whole Dec128 values are left alone too, not just Int64.
+std.assertEqual(std.toString(std.floor(1234567890123456789012345678901234)),
+                "1234567890123456789012345678901234") &&
+// Rounding a value that genuinely needs it still goes through the Double path.
+std.assertEqual(std.toString(std.floor(2.7)), "2") &&
+std.assertEqual(std.toString(std.ceil(2.1)), "3") &&
+std.assertEqual(std.toString(std.round(2.5)), "3") &&
+std.assertEqual(std.toString(std.abs(-3)), "3") &&
+std.assertEqual(std.toString(std.abs(-0)), "0") &&
+// std.sum genuinely computes, so it is left as upstream.
+std.assertEqual(std.toString(std.sum([9007199254740993, 0])), "9007199254740992") &&
 
 true
