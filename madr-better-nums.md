@@ -211,6 +211,27 @@ Recorded so they are not attempted again. Each looked reasonable and is wrong.
    on its own merits (allocation-free, provably equivalent). The benchmark's actual cost was
    `BigDecimal./` — nothing to do with comparison, sorting, or representation. See
    `UPSTREAM_SYNC.md` → "Measured performance".
+7. **Reinstating a `Float64` representation flag to save memory.** The strongest remaining argument
+   for the deleted flag, and the one not about speed: a document with many decimals and no
+   arithmetic pays `Dec128`'s footprint for nothing. The cost is real and measured — importing 900k
+   decimals (16.7 MB of JSON) needs **197 MB** of heap against **142 MB** when the same numbers are
+   `Float64`, i.e. **+39%**. Per value, `Val.Float64` is ~32 bytes (the double sits inline) against
+   ~100 for `Val.Dec128` and its `BigDecimal` graph. Integer-only documents cost **nothing extra**,
+   since integers are `Int64` either way, so the exposure is confined to genuinely fractional data.
+
+   Rejected anyway. A float representation mode *is* the JSON-import narrowing that was just fixed
+   as a bug — reinstating it as a feature would hand back, on request, the exactness hole this fork
+   exists to close. It would also be JVM-global and therefore unscopable per transformer, and would
+   restore a second numeric model to test and document across three platforms.
+
+   The saving to take first, if decimal-heavy memory ever becomes a real complaint, needs no flag:
+   `Dec128` stores a `scala.math.BigDecimal` (~70 bytes) which merely wraps a
+   `java.math.BigDecimal` (~45 bytes) plus a `MathContext` reference that is always `DECIMAL128`.
+   Storing the Java one directly saves ~24 bytes per decimal — about 40% of the premium above — with
+   no semantic change. `java.math.BigDecimal` already compiles from shared `src/` on JVM, Scala.js
+   and Native, so the mitigation is portable even though the numbers above are **JVM-only**: object
+   layout on Scala.js and Native differs enough that the +39% figure should not be quoted for them
+   without re-measuring. The direction holds on all three; the magnitude is unverified off the JVM.
 
 ## Notes
 
