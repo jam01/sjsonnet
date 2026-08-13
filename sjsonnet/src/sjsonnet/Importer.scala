@@ -362,7 +362,6 @@ class CachedResolver(
 
 object CachedResolver {
   private final class DuplicateJsonKey extends RuntimeException(null, null, false, false)
-  private final class InvalidJsonNumber extends RuntimeException(null, null, false, false)
   private final class JsonParseDepthExceeded extends RuntimeException(null, null, false, false)
 
   private[sjsonnet] def parseJsonImport(
@@ -377,8 +376,10 @@ object CachedResolver {
         new JsonImportVisitor(fileScope, internedStrings, settings)
       Some((ujson.ByteArrayParser.transform(content.readRawBytes(), visitor), fileScope))
     } catch {
-      case _: ujson.ParsingFailedException | _: DuplicateJsonKey | _: InvalidJsonNumber |
-          _: JsonParseDepthExceeded | _: NumberFormatException =>
+      // NumberFormatException still bails to the jsonnet parser: ujson validates number syntax,
+      // but Val.Num builds the value and the slow path must stay the authority on what parses.
+      case _: ujson.ParsingFailedException | _: DuplicateJsonKey | _: JsonParseDepthExceeded |
+          _: NumberFormatException =>
         None
     }
   }
@@ -463,11 +464,15 @@ object CachedResolver {
     def visitFalse(index: Int): Val = Val.False(pos(index))
     def visitTrue(index: Int): Val = Val.True(pos(index))
 
+    /**
+     * Builds the number from its literal text, exactly as [[ValVisitor]] does for `std.parseJson`.
+     *
+     * `decIndex`/`expIndex` are what [[Val.Num]] needs to pick a representation, so narrowing
+     * through `Double` here made `import "x.json"` the one ingest path that could not carry an
+     * exact number — the path a transformation most often reads its data from.
+     */
     def visitFloat64StringParts(s: CharSequence, decIndex: Int, expIndex: Int, index: Int): Val =
-      Val.Num(
-        pos(index),
-        parseNumber(s)
-      )
+      Val.Num(pos(index), s.toString, decIndex, expIndex)
 
     def visitString(s: CharSequence, index: Int): Val = {
       val str = s match {
@@ -482,12 +487,6 @@ object CachedResolver {
 
     private def intern(s: String): String =
       if (s.length > 1024) s else internedStrings.getOrElseUpdate(s, s)
-
-    private def parseNumber(s: CharSequence): Double = {
-      val value = s.toString.toDouble
-      if (!java.lang.Double.isFinite(value)) throw new InvalidJsonNumber
-      value
-    }
 
     private var containerDepth = 0
 
