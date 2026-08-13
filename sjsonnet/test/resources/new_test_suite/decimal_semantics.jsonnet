@@ -161,5 +161,20 @@ std.assertEqual('%d' % 1e30, "1000000000000000000000000000000") &&
 // pinned here so a future change to it is deliberate rather than accidental.
 std.assertEqual(std.toString(std.sum([0.1, 0.2])), "0.30000000000000004") &&
 std.assertEqual(std.toString(0.1 + 0.2), "0.3") &&
+// A std result is a Float64, and that inexactness propagates: one Float64 operand makes the whole
+// operation IEEE-754, so downstream arithmetic stays on upstream's answers rather than being
+// re-exactified by the next literal it meets.
+std.assertEqual(std.toString(std.sum([0.1, 0.2]) * 10), "3.0000000000000004") &&
+std.assertEqual(std.toString(std.sqrt(2) * std.sqrt(2)), "2.0000000000000004") &&
+// All five spellings of 2*sqrt(2) agree, whichever side the Float64 is on and whether the other
+// operand is an Int64 or a Dec128.
+std.assertEqual(std.toString(std.sqrt(2) + std.sqrt(2)), "2.8284271247461903") &&
+std.assertEqual(std.toString(std.sqrt(2) * 2), "2.8284271247461903") &&
+std.assertEqual(std.toString(std.sqrt(2) * 2.0), "2.8284271247461903") &&
+std.assertEqual(std.toString(2 * std.sqrt(2)), "2.8284271247461903") &&
+std.assertEqual(std.toString(2.0 * std.sqrt(2)), "2.8284271247461903") &&
+// Contagion never reaches an expression without a Float64 in it.
+std.assertEqual(std.toString(1e308 + 1e308), "2e+308") &&
+std.assertEqual(std.toString(1 / 3 * 3), "0.9999999999999999999999999999999999") &&
 
 true

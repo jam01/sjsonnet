@@ -30,6 +30,10 @@ Default behavior:
 * All floating-point literals parse as **Dec128**
 * Arithmetic between numeric values promotes to the most precise representation needed to preserve correctness
 * Numeric comparisons are defined in a cross-type safe way
+* **One `Float64` operand makes an arithmetic operation IEEE-754**, on operands reduced to `Double`.
+  `Float64` is the inexact tier by construction, so inexactness is a property of the value and
+  propagates rather than being re-exactified by the next literal it meets. `Int64` and `Dec128`
+  arithmetic is untouched, so this reaches only `std` results and `-0` unless the opt-out is set.
 
 Opt-out — `-Dsjsonnet.floatAsBigDecimal=false`:
 
@@ -37,19 +41,14 @@ Opt-out — `-Dsjsonnet.floatAsBigDecimal=false`:
   allocation cost of a boxed double. Only literals a double can hold within 17 significant digits
   and an exponent in `[-325, 325]` are admitted (`NumberMath.allowFloat64LiteralWithIndexes`);
   anything else still parses as `Dec128`, so the flag can lose precision but cannot lose magnitude.
-* This is a **parsing/representation switch only — it does not gate arithmetic promotion.** A
-  `Float64` still promotes to `Dec128` on its first arithmetic operation, so `0.1 + 0.2` is `0.3`
-  either way. Promotion is deliberately unconditional: `BigDecimal.decimal(d)` reinterprets a
-  double as its shortest round-tripping decimal, so skipping it would change the *answer*, not
-  merely the mantissa width.
-* What the flag therefore changes is how a literal is spelled back out, since `Float64` renders
-  through the double path: `0.12345678901234567` becomes `0.12345678901234566`, and whole values
-  expand in full rather than using `Dec128`'s 1e21 scientific-notation window (`1e21` prints as
-  `1000000000000000000000`). That is upstream's binary64 behaviour, which is the point of the flag.
-* There is **no float-only arithmetic mode.** If one is ever wanted it needs its own flag; every
-  promotion decision routes through the single predicate `NumberMath.promoteFloat64Arithmetic`
-  (hardcoded `true`) precisely so that adding one is a one-line change rather than five scattered
-  edits across the evaluator's fast paths.
+* The flag is a **parsing switch, but its effect is not confined to parsing**, because `Float64`
+  arithmetic is IEEE-754 (see below). Making literals `Float64` therefore makes ordinary literal
+  arithmetic binary64 too: `0.1 + 0.2` is `0.3` by default and `0.30000000000000004` under the
+  opt-out, and `0.3 % 0.1` is `0` and `0.09999999999999998`. That is upstream's arithmetic, which
+  is the point of the flag — opting out of `BigDecimal` opts out of its answers.
+* It also changes how a literal is spelled back out, since `Float64` renders through the double
+  path: `0.12345678901234567` becomes `0.12345678901234566`, and whole values expand in full rather
+  than using `Dec128`'s 1e21 scientific-notation window (`1e21` prints as `1000000000000000000000`).
 
 Library API change:
 
@@ -140,8 +139,11 @@ Rationale:
 
 ### Neutral
 
-* `Float64` literal representation remains available via the opt-out above; float-only
-  *arithmetic* does not — see that section for why, and for what the flag actually changes
+* `Float64` literal representation remains available via the opt-out above, and because `Float64`
+  arithmetic is IEEE-754, that opt-out now delivers upstream's arithmetic as well as its spellings
+* A `Dec128` outside binary64's range collapses to an infinity when it meets a `Float64`, and
+  `Val.Float64` rejects those, so `1e400 * std.sqrt(2)` raises `Overflow` where `1e400 * 2` stays
+  exact — the same trade upstream makes for every number it holds
 * Numeric behavior is now more predictable but slightly less “JavaScript-like”
 
 ## Alternatives Considered
@@ -164,11 +166,16 @@ Recorded so they are not attempted again. Each looked reasonable and is wrong.
    passing unchanged. This makes `Dec128` "a double with extra digits". Its exponent range
    (~1e±6144) being far wider than binary64's is the entire point; overflow at binary64 boundaries
    is precisely the behaviour the rework exists to remove.
-2. **Keep the raw-`Double` fast path when both operands are `Float64`.** `BigDecimal.decimal(d)`
-   reinterprets a double as its shortest round-tripping decimal, so promotion changes the *answer*,
-   not just the mantissa width: `0.1 + 0.2` is `0.30000000000000004` raw and `0.3` promoted. `%` is
-   the trap — IEEE `fmod` is binary-exact and so looks safe, yet `0.3 % 0.1` is
-   `0.09999999999999998` raw and `0` promoted. Only comparison and bitwise/shift may stay raw.
+2. **Raw `Double` only when *both* operands are `Float64`.** The narrow version of the float rule
+   now in force, and it is self-inconsistent: it splits `x + x` from `x * 2` for a `Float64` `x`,
+   because the latter meets an `Int64` and re-enters the exact core. `std.sqrt(2) + std.sqrt(2)`
+   gave `2.8284271247461903` while `std.sqrt(2) * 2` gave `2.8284271247461902` — the same quantity,
+   two answers, where upstream and full promotion each give one. Contagion was adopted instead.
+   Note what either version costs, since promotion was not arbitrary: `BigDecimal.decimal(d)`
+   reinterprets a double as its shortest round-tripping decimal, so raw and promoted disagree on
+   ordinary values, and `%` is the trap — IEEE `fmod` is binary-exact and so looks safe, yet
+   `0.3 % 0.1` is `0.09999999999999998` raw and `0` promoted. Comparison and bitwise/shift were
+   always raw regardless.
 3. **Gate the comprehension accelerator on element type** (statically, or by checking the first
    element at runtime). Neither helps, because the mismatch is not the element type:
    `[x / 3 for x in std.range(...)]` differs between raw-`Double` and `NumberMath` whatever the
@@ -220,4 +227,5 @@ measuring:
 * **The arms worth optimising are the `Dec128` ones.** With `floatAsBigDecimal` at its default
   `true`, a decimal literal parses as `Dec128`, so `Int64 / Dec128` and `Dec128 / Dec128` are what
   real programs execute. `Float64` operands arise only under the opt-out, from `-0.0`, and from
-  double-returning `std` functions — optimising those arms alone measures as exactly nothing.
+  double-returning `std` functions — optimising those arms alone measured as exactly nothing, and
+  they no longer reach `BigDecimal` at all now that a `Float64` operand means IEEE-754.

@@ -517,7 +517,7 @@ object Val {
    *     This is the default for non-integer literals.
    *
    * See `madr-better-nums.md` for the rationale. All arithmetic across representations lives in
-   * [[NumberMath]], including the all-[[Float64]] case — see `NumberMath.promoteFloat64Arithmetic`.
+   * [[NumberMath]], where a single [[Float64]] operand makes the whole operation IEEE-754.
    */
   sealed abstract class Num extends Literal {
     def prettyName = "number"

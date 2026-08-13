@@ -784,9 +784,9 @@ class Evaluator(
    * This replaces the old `visitExprAsDouble` chain, which kept intermediate results of `a + b * c`
    * as unboxed `double`s. That optimisation is not available under the Int64/Float64/Dec128 model:
    * an intermediate result now carries a representation, and raw `double` arithmetic would silently
-   * disagree with [[NumberMath]] (see `NumberMath.promoteFloat64Arithmetic`). Bitwise and shift ops
-   * keep their unboxed path via [[visitExprAsSafeLong]], since they force operands to `Long`
-   * regardless of representation.
+   * disagree with [[NumberMath]], which keeps `Int64`/`Dec128` exact. Bitwise and shift ops keep
+   * their unboxed path via [[visitExprAsSafeLong]], since they force operands to `Long` regardless
+   * of representation.
    */
   private def visitExprAsNum(e: Expr)(implicit scope: ValScope): Val.Num = try {
     e match {
@@ -1223,7 +1223,7 @@ class Evaluator(
     val pos = e.pos
     (e.op: @switch) match {
       // Numeric ops all route through NumberMath so the result keeps the widest representation
-      // needed to stay exact — see NumberMath.promoteFloat64Arithmetic.
+      // needed to stay exact, and so a Float64 operand makes the whole operation IEEE-754.
       case Expr.BinaryOp.OP_* =>
         NumberMath.multiply(pos, visitExprAsNum(e.lhs), visitExprAsNum(e.rhs))
       case Expr.BinaryOp.OP_- =>
