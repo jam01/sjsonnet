@@ -46,6 +46,20 @@ import sjsonnet.functions.AbstractFunctionModule
 object MathModule extends AbstractFunctionModule {
   def name = "math"
 
+  /**
+   * Whether `x` is already a whole number held in an exact representation, so rounding it is the
+   * identity and narrowing it through `Double` could only lose digits.
+   *
+   * `std` is inexact by design (`madr-better-nums.md`) and that is not what this guards against —
+   * it guards against a *no-op* being destructive. `std.floor(9007199254740993)` answering `…992`
+   * is not "std narrows", it is floor changing an integer it was asked to leave alone.
+   */
+  @inline private def isExactWhole(x: Val.Num): Boolean = x match {
+    case _: Val.Int64     => true
+    case Val.Dec128(_, d) => d.isWhole
+    case _                => false
+  }
+
   private object Clamp extends Val.Builtin3("clamp", "x", "minVal", "maxVal") {
     private def applyClamp(
         x: Eval,
@@ -135,10 +149,14 @@ object MathModule extends AbstractFunctionModule {
     }
   }
 
+  /**
+   * Ordering for [[Clamp]], which returns one of its arguments — so the comparison must be exact
+   * across representations too, or it picks the wrong one past 2^53.
+   */
   private def compareForClamp(op: String, left: Val, right: Val, pos: Position)(implicit
       ev: EvalScope): Int = {
     (left, right) match {
-      case (l: Val.Num, r: Val.Num)   => compareNumbers(l.asDouble, r.asDouble)
+      case (l: Val.Num, r: Val.Num)   => NumberMath.compareTo(l, r)
       case (l: Val.Str, r: Val.Str)   => Util.compareStringsByCodepoint(l.str, r.str)
       case (l: Val.Arr, r: Val.Arr)   => compareArraysForClamp(l, r, pos)
       case (_: Val.Bool, _: Val.Bool) =>
@@ -160,7 +178,7 @@ object MathModule extends AbstractFunctionModule {
   private def compareArrayValuesForClamp(left: Val, right: Val, pos: Position)(implicit
       ev: EvalScope): Int = {
     (left, right) match {
-      case (l: Val.Num, r: Val.Num)   => compareNumbers(l.asDouble, r.asDouble)
+      case (l: Val.Num, r: Val.Num)   => NumberMath.compareTo(l, r)
       case (l: Val.Str, r: Val.Str)   => Util.compareStringsByCodepoint(l.str, r.str)
       case (l: Val.Arr, r: Val.Arr)   => compareArraysForClamp(l, r, pos)
       case (_: Val.Null, _: Val.Null) =>
@@ -204,9 +222,6 @@ object MathModule extends AbstractFunctionModule {
     Integer.compare(leftLength, rightLength)
   }
 
-  @inline private def compareNumbers(left: Double, right: Double): Int =
-    if (left < right) -1 else if (left > right) 1 else 0
-
   @inline private def isPrimitiveComparable(value: Val): Boolean =
     value.isInstanceOf[Val.Num] || value.isInstanceOf[Val.Str]
 
@@ -230,8 +245,10 @@ object MathModule extends AbstractFunctionModule {
      *
      * The official docs list std.max(a, b) as a mathematical function.
      */
-    builtin("max", "a", "b") { (pos, ev, a: Double, b: Double) =>
-      math.max(a, b)
+    // Returns one of its arguments rather than recomputing through Double: narrowing made
+    // std.max(9007199254740993, 1) answer 9007199254740992, a number that was never an input.
+    builtin("max", "a", "b") { (pos, ev, a: Val.Num, b: Val.Num) =>
+      if (NumberMath.compareTo(a, b) >= 0) a else b
     },
     /**
      * [[https://jsonnet.org/ref/stdlib.html#math std.min(a, b)]].
@@ -240,8 +257,8 @@ object MathModule extends AbstractFunctionModule {
      *
      * The official docs list std.min(a, b) as a mathematical function.
      */
-    builtin("min", "a", "b") { (pos, ev, a: Double, b: Double) =>
-      math.min(a, b)
+    builtin("min", "a", "b") { (pos, ev, a: Val.Num, b: Val.Num) =>
+      if (NumberMath.compareTo(a, b) <= 0) a else b
     },
     /**
      * [[https://jsonnet.org/ref/stdlib.html#math std.mod(a, b)]].
@@ -303,8 +320,8 @@ object MathModule extends AbstractFunctionModule {
      *
      * The official docs list std.floor(x) as a mathematical function.
      */
-    builtin("floor", "x") { (pos, ev, x: Double) =>
-      math.floor(x)
+    builtin("floor", "x") { (pos, ev, x: Val.Num) =>
+      if (isExactWhole(x)) x else Val.Num(pos, math.floor(x.asDouble))
     },
     /**
      * [[https://jsonnet.org/ref/stdlib.html#math std.round(x)]].
@@ -313,14 +330,20 @@ object MathModule extends AbstractFunctionModule {
      *
      * The official docs list std.round(x) as a mathematical function.
      */
-    builtin("round", "x") { (pos, ev, x: Double) =>
-      // For |x| >= 2^52 the double is already an exact integer (ULP >= 1.0);
-      // adding 0.5 would invoke IEEE 754 round-to-even and produce the wrong
-      // result for odd inputs (e.g. 2^53 - 1). Short-circuit to avoid it.
-      if (x != x || math.abs(x) >= 4503599627370496.0) x
-      else if (x == 0) x
-      else if (x > 0) math.floor(x + 0.5)
-      else math.ceil(x - 0.5)
+    builtin("round", "x") { (pos, ev, n: Val.Num) =>
+      if (isExactWhole(n)) n
+      else {
+        val x = n.asDouble
+        // For |x| >= 2^52 the double is already an exact integer (ULP >= 1.0);
+        // adding 0.5 would invoke IEEE 754 round-to-even and produce the wrong
+        // result for odd inputs (e.g. 2^53 - 1). Short-circuit to avoid it.
+        val r =
+          if (x != x || math.abs(x) >= 4503599627370496.0) x
+          else if (x == 0) x
+          else if (x > 0) math.floor(x + 0.5)
+          else math.ceil(x - 0.5)
+        Val.Num(pos, r)
+      }
     },
     /**
      * [[https://jsonnet.org/ref/stdlib.html#math std.ceil(x)]].
@@ -329,8 +352,8 @@ object MathModule extends AbstractFunctionModule {
      *
      * The official docs list std.ceil(x) as a mathematical function.
      */
-    builtin("ceil", "x") { (pos, ev, x: Double) =>
-      math.ceil(x)
+    builtin("ceil", "x") { (pos, ev, x: Val.Num) =>
+      if (isExactWhole(x)) x else Val.Num(pos, math.ceil(x.asDouble))
     },
     /**
      * [[https://jsonnet.org/ref/stdlib.html#math std.abs(n)]].
@@ -339,8 +362,9 @@ object MathModule extends AbstractFunctionModule {
      *
      * The official docs list std.abs(n) as a mathematical function.
      */
-    builtin("abs", "n") { (pos, ev, x: Double) =>
-      math.abs(x)
+    // A sign flip cannot change the magnitude, so it must not change the representation either.
+    builtin("abs", "n") { (pos, ev, x: Val.Num) =>
+      if (NumberMath.isNegative(x)) NumberMath.negate(pos, x)(ev) else x
     },
     /**
      * [[https://jsonnet.org/ref/stdlib.html#math std.sign(n)]].
