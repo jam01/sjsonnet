@@ -70,6 +70,38 @@ std.assertEqual(std.toString(std.parseJson("-0")), "-0") &&
 std.assertEqual(-0 == 0, true) &&
 std.assertEqual(std.primitiveEquals(-0, 0), true) &&
 
+// --- Int64 / Int64 -----------------------------------------------------------------------------
+// An inexact quotient of two Int64s is a Dec128. NumberMath computes the terminating ones in Long
+// arithmetic instead of BigDecimal.divide, so these pin that the two agree on the printed digits —
+// which means on value *and* scale, since a stray trailing zero would show.
+std.assertEqual(std.toString(3 / 2), "1.5") &&
+std.assertEqual(std.toString(10 / 4), "2.5") &&
+std.assertEqual(std.toString(123 / 40), "3.075") &&
+std.assertEqual(std.toString(1 / 1024), "0.0009765625") &&
+std.assertEqual(std.toString(1 / 3125), "0.00032") &&
+std.assertEqual(std.toString(1 / 100000), "0.00001") &&
+// Sign lives on the quotient, not on the scaling.
+std.assertEqual(std.toString(-7 / 2), "-3.5") &&
+std.assertEqual(std.toString(7 / -2), "-3.5") &&
+std.assertEqual(std.toString(-7 / -2), "3.5") &&
+// Scaling the numerator by 10 would overflow a Long, so these fall back to BigDecimal.divide.
+std.assertEqual(std.toString(999999999999999999 / 2), "499999999999999999.5") &&
+std.assertEqual(std.toString(1234567890123456789 / 4), "308641972530864197.25") &&
+std.assertEqual(std.toString(-9223372036854775807 / 2), "-4611686018427387903.5") &&
+// Terminating, but far deeper than a Long reaches: 2^-51 fits DECIMAL128's 34 digits exactly,
+// 2^-53 does not and rounds.
+std.assertEqual(std.toString(1 / 2251799813685248), "4.440892098500626161694526672363281e-16") &&
+std.assertEqual(std.toString(1 / 9007199254740992), "1.11022302462515654042363166809082e-16") &&
+// Non-terminating quotients round at 34 significant digits, as 1 / 3 does above.
+std.assertEqual(std.toString(2 / 7), "0.2857142857142857142857142857142857") &&
+std.assertEqual(std.toString(1 / 6), "0.1666666666666666666666666666666667") &&
+// A quotient that divides evenly stays an Int64 and never reaches any of the above.
+std.assertEqual(std.toString(100 / 4), "25") &&
+// Exactness survives into the next operation.
+std.assertEqual(std.toString(1 / 2 * 2), "1") &&
+std.assertEqual(std.toString((1 / 4) + (1 / 4)), "0.5") &&
+std.assertEqual(3 / 2 == 1.5, true) &&
+
 // --- Modulo -----------------------------------------------------------------------------------
 // Decimally correct: IEEE fmod gives 0.09999999999999998 here.
 std.assertEqual(std.toString(0.3 % 0.1), "0") &&

@@ -198,7 +198,11 @@ object NumberMath {
   private def divide(a: Val.Num, b: Val.Num): Any = (a, b) match {
     case (Int64(_, x), Int64(_, y)) =>
       if (x % y == 0) x / y // Keep as Long if divisible
-      else BigDecimal.decimal(x) / BigDecimal.decimal(y) // Promote to BigDecimal for precision
+      else {
+        val exact = terminatingLongQuotient(x, y)
+        if (exact != null) exact
+        else BigDecimal.decimal(x) / BigDecimal.decimal(y) // Promote to BigDecimal for precision
+      }
     case (Int64(_, x), Float64(_, y)) => BigDecimal.decimal(x) / BigDecimal.decimal(y)
     case (Int64(_, x), Dec128(_, y))  => BigDecimal.decimal(x) / y // Promote to BigDecimal
 
@@ -210,6 +214,43 @@ object NumberMath {
     case (Dec128(_, x), Int64(_, y))   => x / BigDecimal.decimal(y) // Promote to BigDecimal
     case (Dec128(_, x), Float64(_, y)) => x / BigDecimal.decimal(y) // Promote to BigDecimal
     case (Dec128(_, x), Dec128(_, y))  => x / y // BigDecimal handles precision
+  }
+
+  /** The range a `Long` can hold and still survive one more `* 10`. */
+  private final val MaxScalableLong = Long.MaxValue / 10
+  private final val MinScalableLong = Long.MinValue / 10
+
+  /**
+   * The exact quotient `x / y` as a `BigDecimal`, or `null` when it does not terminate within a
+   * `Long`.
+   *
+   * PERF: this exists to keep `x / 2`, `x / 4`, `x / 10` and friends off `BigDecimal.divide`, which
+   * costs ~700ns because its exact-remainder branch strips trailing zeros by repeated Knuth
+   * division. Pure `Long` arithmetic settles the same cases in ~30-45ns, and a miss (a repeating
+   * quotient such as `x / 3`) wastes at most 19 multiply-and-remainder pairs before falling back.
+   *
+   * `x / y` has a terminating decimal expansion iff `x * 10^s` is divisible by `y` for some `s`.
+   * The first such `s` yields a quotient with no trailing zero — if `x * 10^s / y` ended in `0`
+   * then `x * 10^(s-1)` would already have divided evenly — so the scale matches the one
+   * `BigDecimal.divide(_, DECIMAL128)` settles on, and the two agree on value *and* scale.
+   *
+   * Callers must have ruled out `y == 0` and `x % y == 0`; the latter also rules out `|y| < 2`,
+   * which is what keeps `num / y` from overflowing.
+   */
+  private def terminatingLongQuotient(x: Long, y: Long): BigDecimal = {
+    var num = x
+    var scale = 0
+    // |num| grows tenfold per iteration, so the guard always terminates the loop.
+    while (num >= MinScalableLong && num <= MaxScalableLong) {
+      num *= 10
+      scale += 1
+      if (num % y == 0)
+        return BigDecimal.decimal(
+          java.math.BigDecimal.valueOf(num / y, scale),
+          MathContext.DECIMAL128
+        )
+    }
+    null
   }
 
   def mod(pos: Position, a: Val.Num, b: Val.Num)(implicit ev: EvalScope): Val.Num = {
