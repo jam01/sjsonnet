@@ -25,33 +25,47 @@ We introduce a richer numeric model with three explicit numeric representations:
 * **Float64** — IEEE double (fast, inexact)
 * **Dec128** — `BigDecimal` with `DECIMAL128` precision (exact within 34 digits)
 
-Default behavior:
+Default behavior — and the only behavior:
 
-* All floating-point literals parse as **Dec128**
-* Arithmetic between numeric values promotes to the most precise representation needed to preserve correctness
-* Numeric comparisons are defined in a cross-type safe way
-* **One `Float64` operand makes an arithmetic operation IEEE-754**, on operands reduced to `Double`.
-  `Float64` is the inexact tier by construction, so inexactness is a property of the value and
-  propagates rather than being re-exactified by the next literal it meets. `Int64` and `Dec128`
-  arithmetic is untouched, so this reaches only `std` results and `-0` unless the opt-out is set.
+* All non-integer literals parse as **Dec128**. Integer literals parse as **Int64**, widening to
+  `Dec128` past `Long` range rather than rounding.
+* Arithmetic promotes to the most precise representation needed to preserve correctness.
+* Numeric comparisons are exact across all three representations.
 
-Opt-out — `-Dsjsonnet.floatAsBigDecimal=false`:
+**Exactness wins over `Float64`, unconditionally.** A `Float64` operand is promoted like any other,
+so it never survives an operation — it is an input representation only, reaching arithmetic from a
+`std` result, from `-0`, or from an embedder. The alternative (a `Float64` operand making the whole
+operation IEEE-754) was implemented and reverted: it means one `std.sqrt` poisons every value
+downstream of it with no way back to exactness, which is the wrong failure for a transformation
+tool. A restricted form — raw `Double` only when *both* operands are `Float64` — is worse still, and
+is recorded under Rejected alternatives.
 
-* Non-integer **literals** parse as `Float64` instead of `Dec128`, trading exactness for the lower
-  allocation cost of a boxed double. Only literals a double can hold within 17 significant digits
-  and an exponent in `[-325, 325]` are admitted (`NumberMath.allowFloat64LiteralWithIndexes`);
-  anything else still parses as `Dec128`. That bounds what a *literal* loses, but not what
-  arithmetic on it loses: `1e308` is admitted, and `1e308 + 1e308` overflows binary64, so under the
-  opt-out it raises `Overflow` where the default gives `2e+308`. The flag costs magnitude as well
-  as precision — it restores upstream's range limits along with upstream's answers.
-* The flag is a **parsing switch, but its effect is not confined to parsing**, because `Float64`
-  arithmetic is IEEE-754 (see below). Making literals `Float64` therefore makes ordinary literal
-  arithmetic binary64 too: `0.1 + 0.2` is `0.3` by default and `0.30000000000000004` under the
-  opt-out, and `0.3 % 0.1` is `0` and `0.09999999999999998`. That is upstream's arithmetic, which
-  is the point of the flag — opting out of `BigDecimal` opts out of its answers.
-* It also changes how a literal is spelled back out, since `Float64` renders through the double
-  path: `0.12345678901234567` becomes `0.12345678901234566`, and whole values expand in full rather
-  than using `Dec128`'s 1e21 scientific-notation window (`1e21` prints as `1000000000000000000000`).
+The cost is that exact arithmetic over an already-inexact operand looks more precise than it is:
+`std.sqrt(2) * std.sqrt(2)` is `2.00000000000000014481069235364401`, ~16 of whose digits mean
+anything. Bounded at 34 digits by `DECIMAL128`. This is the same phenomenon as
+`std.floor(x) / 100`, not a separate quirk — see Scope below.
+
+**There is no opt-out.** Exactness is the product, so it is not switchable: no float-literal mode,
+no float-arithmetic mode, no `sjsonnet.floatAsBigDecimal`. A JVM-global system property could not
+be scoped per transformer anyway, and a second numeric model would be a permanent second code path
+to test and document. Anyone who wants upstream's numerics runs upstream sjsonnet; this fork is not
+the place to get them. Measured cost of exactness on the benchmark suite: median **0.98x** of
+upstream across 14 cases, worst 1.22x — so there is nothing much to opt out of.
+
+Scope — **the language core is exact; the standard library is not**:
+
+* `std` numeric functions narrow to binary64, as upstream. Exact arithmetic *over* a `std` result is
+  therefore exact arithmetic over an already-inexact value — `std.sqrt(2) * std.sqrt(2)` and
+  `std.floor(x) / 100` are the same phenomenon. Reach for `xtr` when the value matters; it has an
+  exact `floor`.
+* Diverging in `std` is deliberately avoided: it is upstream's most actively maintained surface, so
+  every file we touch there is a merge-conflict cost paid on every sync, forever.
+* **Except where a `std` function would answer with a number that was never an input.** That is not
+  "std narrows", it is a no-op being destructive, and it is fixed: `std.max`/`std.min` return one of
+  their arguments, `std.abs` flips sign in place, `std.floor`/`ceil`/`round` are the identity on
+  values already whole in an exact representation, and `std.clamp` orders its arguments exactly.
+  `std.max(9007199254740993, 1)` used to answer `9007199254740992`. These read as bug fixes rather
+  than semantic divergence, which limits the sync cost above.
 
 Library API change:
 
@@ -142,11 +156,9 @@ Rationale:
 
 ### Neutral
 
-* `Float64` literal representation remains available via the opt-out above, and because `Float64`
-  arithmetic is IEEE-754, that opt-out now delivers upstream's arithmetic as well as its spellings
-* A `Dec128` outside binary64's range collapses to an infinity when it meets a `Float64`, and
-  `Val.Float64` rejects those, so `1e400 * std.sqrt(2)` raises `Overflow` where `1e400 * 2` stays
-  exact — the same trade upstream makes for every number it holds
+* There is no way to obtain upstream's numerics from this fork — a one-way door, taken knowingly
+* A value that has passed through `std` is inexact, and no later exact operation recovers that;
+  `xtr` is the exact path, including for money
 * Numeric behavior is now more predictable but slightly less “JavaScript-like”
 
 ## Alternatives Considered
@@ -169,16 +181,21 @@ Recorded so they are not attempted again. Each looked reasonable and is wrong.
    passing unchanged. This makes `Dec128` "a double with extra digits". Its exponent range
    (~1e±6144) being far wider than binary64's is the entire point; overflow at binary64 boundaries
    is precisely the behaviour the rework exists to remove.
-2. **Raw `Double` only when *both* operands are `Float64`.** The narrow version of the float rule
-   now in force, and it is self-inconsistent: it splits `x + x` from `x * 2` for a `Float64` `x`,
-   because the latter meets an `Int64` and re-enters the exact core. `std.sqrt(2) + std.sqrt(2)`
-   gave `2.8284271247461903` while `std.sqrt(2) * 2` gave `2.8284271247461902` — the same quantity,
-   two answers, where upstream and full promotion each give one. Contagion was adopted instead.
-   Note what either version costs, since promotion was not arbitrary: `BigDecimal.decimal(d)`
+2. **Let a `Float64` operand make the operation IEEE-754.** Implemented, measured, reverted. Two
+   variants, both worse than promoting:
+   * *Contagion* (any `Float64` operand wins) is self-consistent and matches upstream wherever a
+     float appears, but one `std.sqrt` mid-pipeline makes every downstream value inexact with no
+     route back — the wrong failure mode for a transformation tool.
+   * *Both operands `Float64`* is self-inconsistent: it splits `x + x` from `x * 2`, since the
+     latter meets an `Int64` and re-enters the exact core. In Jsonnet `2` and `2.0` are the same
+     number, so any rule where they behave differently is broken. Only "float always wins" and
+     "float never wins" are coherent; we take the latter.
+   Note what either would have bought, since promotion is not free: `BigDecimal.decimal(d)`
    reinterprets a double as its shortest round-tripping decimal, so raw and promoted disagree on
    ordinary values, and `%` is the trap — IEEE `fmod` is binary-exact and so looks safe, yet
    `0.3 % 0.1` is `0.09999999999999998` raw and `0` promoted. Comparison and bitwise/shift were
-   always raw regardless.
+   always raw regardless. Measured: promoting costs 4–13% over contagion on deliberately
+   float-heavy code and nothing measurable elsewhere.
 3. **Gate the comprehension accelerator on element type** (statically, or by checking the first
    element at runtime). Neither helps, because the mismatch is not the element type:
    `[x / 3 for x in std.range(...)]` differs between raw-`Double` and `NumberMath` whatever the
@@ -227,8 +244,7 @@ measuring:
   stripped must already divide the dividend. It runs only after a scaling step has actually missed,
   because `/ 2`, `/ 5` and `/ 10` succeed on the first step and testing them first cost 3.5% on
   `bench.06`. Placement is purely a speed question: a `false` only routes to the exact divide.
-* **The arms worth optimising are the `Dec128` ones.** With `floatAsBigDecimal` at its default
-  `true`, a decimal literal parses as `Dec128`, so `Int64 / Dec128` and `Dec128 / Dec128` are what
-  real programs execute. `Float64` operands arise only under the opt-out, from `-0.0`, and from
-  double-returning `std` functions — optimising those arms alone measured as exactly nothing, and
-  they no longer reach `BigDecimal` at all now that a `Float64` operand means IEEE-754.
+* **The arms worth optimising are the `Dec128` ones.** Every decimal literal is a `Dec128`, so
+  `Int64 / Dec128` and `Dec128 / Dec128` are what real programs execute. `Float64` operands arise
+  only from `-0.0` and from double-returning `std` functions — optimising those arms alone measures
+  as exactly nothing.

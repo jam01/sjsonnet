@@ -230,7 +230,7 @@ The rationale for the numeric entries lives in `madr-better-nums.md`; this is th
 | `Interpreter.interpret` | Returns `ujson.Value`, whose numbers are `Double` — so the convenience overload **narrows**, yielding `Infinity` for out-of-range values and rounding past 2^53 | Not fixable without changing ujson. Use `interpret0(txt, path, visitor)` with a Dec128-aware visitor; that is what xtrasonnet does. |
 | Test harness | 10 goldens skip-listed in `FileTests.scala` because `ujson.Value` cannot express their result | Their goldens are left at upstream's text so a sync drops in clean. Coverage moved to `new_test_suite/decimal_semantics.jsonnet`, which asserts on rendered strings. |
 | Scala Native 2.13 | `-0` produced by arithmetic renders `0`; 2 unit tests + 9 goldens fail on that target only | Toolchain quirk in `NumberMath.signZero`'s `-0.0` literal. Not fixed: the fork targets xtrasonnet (JVM). `Math.copySign(0.0, -1.0)` is the fix if ever needed. |
-| Performance | Upstream's raw-`Double` arithmetic fast paths were removed; all arithmetic routes through `NumberMath`. Measured at ~1.0–1.25× of upstream on the regression suite — see below | Correctness by default. `Int64` and `Dec128` are exact; a `Float64` operand makes an operation IEEE-754, so `std` results keep upstream's arithmetic downstream. The `sjsonnet.floatAsBigDecimal` opt-out therefore buys upstream's answers as well as its literal spellings, but being a system property it is JVM-global — it cannot be scoped per transformer, which is why it is not the answer for mixed workloads. |
+| Performance | Upstream's raw-`Double` arithmetic fast paths were removed; all arithmetic routes through `NumberMath`. Measured at ~1.0–1.25× of upstream on the regression suite — see below | Exactness is the product, not a mode: there is no opt-out, and no way to get upstream's numerics from this fork. Measured median 0.98x of upstream over 14 suite cases, worst 1.22x, so there is little to opt out of. A `Float64` operand promotes like any other, so it never survives an operation. |
 
 ### Measured performance
 
@@ -280,6 +280,7 @@ how much trouble each file gives on replay:
 | `Materializer.scala` | Six numeric dispatch sites, plus `RangeArr`/`ByteArr` compact paths that write raw `Double` deliberately. |
 | `Renderer.scala` + the four renderers | `renderNum`/`renderDec128`/`truncatedNumDigits`. Mostly additive. |
 | `SetModule` / `StringModule` / `TypeModule` | The only `std` files we diverge in, and only where the floor requires it. |
+| `MathModule` | `max`/`min`/`abs`/`floor`/`ceil`/`round`/`clamp` carry pass-through guards so they cannot answer with a number that was never an input. Everything else in the file is upstream's, deliberately — `std` is inexact by design and `xtr` is the exact path. Guards read as bug fixes, so they usually survive an upstream rework intact. |
 | `Format.scala` | `%s` and the integer conversions. Upstream churns this file heavily. |
 | `ByteRenderer.scala` | Has its own fused `materializeDirect` that bypasses the visitor entirely — easy to miss, and it is the CLI's default path. |
 
