@@ -199,21 +199,27 @@ object NumberMath {
     case (Int64(_, x), Int64(_, y)) =>
       if (x % y == 0) x / y // Keep as Long if divisible
       else {
-        val exact = terminatingLongQuotient(x, y)
+        // Promote to BigDecimal for precision, cheaply where the quotient allows.
+        val exact = terminatingQuotient(x, 0, y, 0)
         if (exact != null) exact
-        else BigDecimal.decimal(x) / BigDecimal.decimal(y) // Promote to BigDecimal for precision
+        else BigDecimal.decimal(x) / BigDecimal.decimal(y)
       }
-    case (Int64(_, x), Float64(_, y)) => BigDecimal.decimal(x) / BigDecimal.decimal(y)
-    case (Int64(_, x), Dec128(_, y))  => BigDecimal.decimal(x) / y // Promote to BigDecimal
+    case (Int64(_, x), Float64(_, y)) => divideExact(BigDecimal.decimal(x), BigDecimal.decimal(y))
+    case (Int64(_, x), Dec128(_, y))  =>
+      divideExact(BigDecimal.decimal(x), y) // Promote to BigDecimal
 
-    case (Float64(_, x), Int64(_, y))   => BigDecimal.decimal(x) / BigDecimal.decimal(y)
+    case (Float64(_, x), Int64(_, y))   => divideExact(BigDecimal.decimal(x), BigDecimal.decimal(y))
     case (Float64(_, x), Float64(_, y)) =>
-      if (promoteFloat64Arithmetic) BigDecimal.decimal(x) / BigDecimal.decimal(y) else x / y
-    case (Float64(_, x), Dec128(_, y)) => BigDecimal.decimal(x) / y // Promote to BigDecimal
+      if (promoteFloat64Arithmetic) divideExact(BigDecimal.decimal(x), BigDecimal.decimal(y))
+      else x / y
+    case (Float64(_, x), Dec128(_, y)) =>
+      divideExact(BigDecimal.decimal(x), y) // Promote to BigDecimal
 
-    case (Dec128(_, x), Int64(_, y))   => x / BigDecimal.decimal(y) // Promote to BigDecimal
-    case (Dec128(_, x), Float64(_, y)) => x / BigDecimal.decimal(y) // Promote to BigDecimal
-    case (Dec128(_, x), Dec128(_, y))  => x / y // BigDecimal handles precision
+    case (Dec128(_, x), Int64(_, y)) =>
+      divideExact(x, BigDecimal.decimal(y)) // Promote to BigDecimal
+    case (Dec128(_, x), Float64(_, y)) =>
+      divideExact(x, BigDecimal.decimal(y)) // Promote to BigDecimal
+    case (Dec128(_, x), Dec128(_, y)) => divideExact(x, y) // BigDecimal handles precision
   }
 
   /** The range a `Long` can hold and still survive one more `* 10`. */
@@ -221,36 +227,92 @@ object NumberMath {
   private final val MinScalableLong = Long.MinValue / 10
 
   /**
-   * The exact quotient `x / y` as a `BigDecimal`, or `null` when it does not terminate within a
-   * `Long`.
+   * Digits an unscaled value may have and still be read out as a `Long`.
    *
-   * PERF: this exists to keep `x / 2`, `x / 4`, `x / 10` and friends off `BigDecimal.divide`, which
-   * costs ~700ns because its exact-remainder branch strips trailing zeros by repeated Knuth
-   * division. Pure `Long` arithmetic settles the same cases in ~30-45ns, and a miss (a repeating
-   * quotient such as `x / 3`) wastes at most 19 multiply-and-remainder pairs before falling back.
-   *
-   * `x / y` has a terminating decimal expansion iff `x * 10^s` is divisible by `y` for some `s`.
-   * The first such `s` yields a quotient with no trailing zero — if `x * 10^s / y` ended in `0`
-   * then `x * 10^(s-1)` would already have divided evenly — so the scale matches the one
-   * `BigDecimal.divide(_, DECIMAL128)` settles on, and the two agree on value *and* scale.
-   *
-   * Callers must have ruled out `y == 0` and `x % y == 0`; the latter also rules out `|y| < 2`,
-   * which is what keeps `num / y` from overflowing.
+   * Paired with the truncating `unscaledValue().longValue()` in [[divideExact]]: 18 digits keeps
+   * the value under `10^18`, so the conversion is exact. Raising this silently truncates a wide
+   * `Dec128` into a plausible-looking wrong quotient instead of falling back.
    */
-  private def terminatingLongQuotient(x: Long, y: Long): BigDecimal = {
-    var num = x
-    var scale = 0
+  private final val MaxUnscaledDigits = 18
+
+  /**
+   * `x / y`, taking the cheap route when the quotient terminates within a `Long`.
+   *
+   * PERF: `BigDecimal./` costs ~500-700ns because its exact-remainder branch strips trailing zeros
+   * back to the preferred scale by repeated Knuth division. [[terminatingQuotient]] settles the
+   * same result in ~10-45ns for the quotients that arise most (`/ 2`, `/ 4`, `/ 10` and friends),
+   * and falls back for the rest.
+   */
+  private def divideExact(x: BigDecimal, y: BigDecimal): BigDecimal = {
+    val bx = x.bigDecimal
+    val by = y.bigDecimal
+    if (bx.precision() <= MaxUnscaledDigits && by.precision() <= MaxUnscaledDigits) {
+      val exact = terminatingQuotient(
+        bx.unscaledValue().longValue(),
+        bx.scale(),
+        by.unscaledValue().longValue(),
+        by.scale()
+      )
+      if (exact != null) return exact
+    }
+    x / y
+  }
+
+  /**
+   * The exact quotient of `ux * 10^-sx` and `uy * 10^-sy` as a `BigDecimal`, or `null` when it does
+   * not terminate within a `Long`.
+   *
+   * A quotient terminates in decimal iff `ux * 10^k` is divisible by `uy` for some `k`, and the
+   * first such `k` yields a quotient with no trailing zero — had `ux * 10^k / uy` ended in `0`,
+   * `ux * 10^(k-1)` would already have divided evenly. That is exactly the representation
+   * `BigDecimal./` arrives at, so the two agree on value *and* scale rather than merely comparing
+   * equal. The scales ride along untouched: the result is that quotient at scale `k + sx - sy`.
+   *
+   * Callers must have ruled out `uy == 0`, and must keep `|ux|` under `10^19` so that `num / uy`
+   * cannot overflow — [[divideExact]] does so via [[MaxUnscaledDigits]], and the `Int64 / Int64`
+   * caller does so by having already returned on `x % y == 0`, which rules out `|y| < 2`.
+   */
+  private def terminatingQuotient(ux: Long, sx: Int, uy: Long, sy: Int): BigDecimal = {
+    var num = ux
+    var k = 0
     // |num| grows tenfold per iteration, so the guard always terminates the loop.
-    while (num >= MinScalableLong && num <= MaxScalableLong) {
-      num *= 10
-      scale += 1
-      if (num % y == 0)
+    while (true) {
+      if (num % uy == 0) {
+        val scale = k.toLong + sx.toLong - sy.toLong
+        if (scale < Int.MinValue || scale > Int.MaxValue) return null
         return BigDecimal.decimal(
-          java.math.BigDecimal.valueOf(num / y, scale),
+          java.math.BigDecimal.valueOf(num / uy, scale.toInt),
           MathContext.DECIMAL128
         )
+      }
+      // Deliberately not before the loop: divisors of 2, 5 and 10 resolve on the first scaling
+      // step, and testing first would tax the commonest quotients to save the rarest.
+      if (k >= 1 && !terminates(ux, uy)) return null
+      if (num < MinScalableLong || num > MaxScalableLong) return null
+      num *= 10
+      k += 1
     }
-    null
+    null // unreachable; `while (true)` is not a Nothing in Scala 2
+  }
+
+  /**
+   * Whether `ux / uy` has a terminating decimal expansion.
+   *
+   * `uy` divides `ux * 10^k` for some `k` exactly when the part of `uy` coprime to 10 already
+   * divides `ux` — the factors of 2 and 5 are what `10^k` can supply, nothing else is. Without this
+   * test a repeating quotient costs 19 trips round the scaling loop *and* the fallback divide,
+   * which measured as a 1.22x regression on `Dec128 / Int64` over a sweep of divisors.
+   *
+   * A `false` here only sends the caller to the exact `BigDecimal` divide, so where this is called
+   * from is a speed question, not a correctness one.
+   *
+   * Callers must have ruled out `uy == 0`, which would not terminate below.
+   */
+  private def terminates(ux: Long, uy: Long): Boolean = {
+    var coprimeTo10 = uy
+    while (coprimeTo10 % 2 == 0) coprimeTo10 /= 2
+    while (coprimeTo10 % 5 == 0) coprimeTo10 /= 5
+    ux % coprimeTo10 == 0
   }
 
   def mod(pos: Position, a: Val.Num, b: Val.Num)(implicit ev: EvalScope): Val.Num = {
