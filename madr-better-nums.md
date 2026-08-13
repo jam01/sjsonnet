@@ -181,7 +181,8 @@ Recorded so they are not attempted again. Each looked reasonable and is wrong.
    lazily in `asDouble`; moving the check earlier changes both the message and its position.
 6. **Assuming mixed-representation comparison dominated `cpp_suite/bench.06`.** A `Long` fast path
    for `Int64`↔whole-`Float64` comparison was added and measured: no effect. The fast path was kept
-   on its own merits (allocation-free, provably equivalent); the benchmark remains unexplained. See
+   on its own merits (allocation-free, provably equivalent). The benchmark's actual cost was
+   `BigDecimal./` — nothing to do with comparison, sorting, or representation. See
    `UPSTREAM_SYNC.md` → "Measured performance".
 
 ## Notes
@@ -198,3 +199,25 @@ broken after the fact:
 * **Every number-to-string spelling must share `RenderUtils.renderNum`** — `std.toString`, `%s`,
   `%(key)s`, and `+` concatenation. Each has its own fast path, and three of the four were found
   narrowing independently.
+
+`BigDecimal` is not uniformly slow, and knowing which operation is decides where tuning pays. Its
+`+`, `-` and `*` are unremarkable; `/` is the outlier, at ~500-700ns, because on an exact quotient
+it strips trailing zeros back to the preferred scale by repeated Knuth division. Anything that
+divides per element therefore falls off a cliff the other operators do not have — which is the
+whole of `cpp_suite/bench.06`. `NumberMath.divideExact` sidesteps it for the quotients that
+actually occur (`/ 2`, `/ 4`, `/ 10`): a decimal quotient terminates iff scaling the numerator by
+some `10^k` makes it divide evenly, and the smallest such `k` reproduces `BigDecimal./`'s own value
+*and* scale, in `Long` arithmetic at ~10-45ns. Two things this depends on, both learned by
+measuring:
+
+* **Reject non-terminating quotients explicitly, but not on the first step.** A repeating quotient
+  discovered by exhausting the loop pays for the whole trip *and* the fallback divide; over a sweep
+  of divisors that measured as a 1.22× *regression*. `terminates` settles it in a few divisions —
+  `10^k` can only ever supply factors of 2 and 5, so what remains of the divisor after those are
+  stripped must already divide the dividend. It runs only after a scaling step has actually missed,
+  because `/ 2`, `/ 5` and `/ 10` succeed on the first step and testing them first cost 3.5% on
+  `bench.06`. Placement is purely a speed question: a `false` only routes to the exact divide.
+* **The arms worth optimising are the `Dec128` ones.** With `floatAsBigDecimal` at its default
+  `true`, a decimal literal parses as `Dec128`, so `Int64 / Dec128` and `Dec128 / Dec128` are what
+  real programs execute. `Float64` operands arise only under the opt-out, from `-0.0`, and from
+  double-returning `std` functions — optimising those arms alone measures as exactly nothing.

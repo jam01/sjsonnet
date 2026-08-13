@@ -230,7 +230,7 @@ The rationale for the numeric entries lives in `madr-better-nums.md`; this is th
 | `Interpreter.interpret` | Returns `ujson.Value`, whose numbers are `Double` — so the convenience overload **narrows**, yielding `Infinity` for out-of-range values and rounding past 2^53 | Not fixable without changing ujson. Use `interpret0(txt, path, visitor)` with a Dec128-aware visitor; that is what xtrasonnet does. |
 | Test harness | 10 goldens skip-listed in `FileTests.scala` because `ujson.Value` cannot express their result | Their goldens are left at upstream's text so a sync drops in clean. Coverage moved to `new_test_suite/decimal_semantics.jsonnet`, which asserts on rendered strings. |
 | Scala Native 2.13 | `-0` produced by arithmetic renders `0`; 2 unit tests + 9 goldens fail on that target only | Toolchain quirk in `NumberMath.signZero`'s `-0.0` literal. Not fixed: the fork targets xtrasonnet (JVM). `Math.copySign(0.0, -1.0)` is the fix if ever needed. |
-| Performance | Upstream's raw-`Double` arithmetic fast paths were removed; all arithmetic routes through `NumberMath`. Measured at ~1.0–1.25× of upstream on the regression suite, with one unexplained outlier — see below | Correctness by default. The `sjsonnet.floatAsBigDecimal` opt-out is representation-only and, being a system property, is JVM-global — it cannot be scoped per transformer, which is why it is not the answer for mixed workloads. |
+| Performance | Upstream's raw-`Double` arithmetic fast paths were removed; all arithmetic routes through `NumberMath`. Measured at ~1.0–1.25× of upstream on the regression suite — see below | Correctness by default. The `sjsonnet.floatAsBigDecimal` opt-out is representation-only and, being a system property, is JVM-global — it cannot be scoped per transformer, which is why it is not the answer for mixed workloads. |
 
 ### Measured performance
 
@@ -247,15 +247,24 @@ should not be quoted.
 | `lazy_array_slice_remove`, `lazy_array_comprehension`, `bench.02` | 1.05–1.08× |
 | `lazy_array_reverse_sparse`, `lazy_array_sparse_indexing` | 1.07–1.11× |
 | `array_copy_views` | 1.22× |
-| **`cpp_suite/bench.06`** | **~7.3×** |
+| `cpp_suite/bench.06` | 1.06–1.24× |
 
-**`bench.06` is an open loose end.** 0.41 ms → 3.0 ms, `std.sort`-dominated (sorts of
-`std.range`, a `keyF` sort, and an `assertEqual` of `std.floor` output against sorted range
-output). It is not caused by `Int64` representation or by mixed-representation comparison — both
-were tried and neither moved it. Its components could not be reproduced outside JMH, because a
-cold-start probe is JVM-startup dominated while JMH measures steady state, so root-causing it
-needs JMH-level profiling. Whoever picks this up: start at `SetModule`'s primitive-array sort
-gating and `compareDefaultSetKeys`.
+**On `runRegressions`' own settings, do not trust anything under a few ms.** The suite runs one
+warmup iteration and one measurement iteration, so a sub-millisecond case is read before JIT has
+settled and fork startup dominates. Re-running the same three cases five times at those settings
+put the *controls* at 0.66–1.22×, which by the rule above invalidates the run. `bench.06` was
+recorded at 7.3× that way; with three warmup and five measurement iterations the same comparison is
+2.9–3.2×. Prefer `-wi 3 -i 5 -f 1` via `org.openjdk.jmh.Main` on the bench classpath when a small
+case matters — `runRegressions` hardcodes its JMH arguments and cannot pass them through.
+
+**`bench.06` was `BigDecimal./`, and is fixed.** Not sorting, and not representation. The file ends
+with `std.makeArray(2000, function(i) std.floor((i + 2) / 2))`; half of those 2000 divisions are
+inexact, and an inexact `Int64 / Int64` promoted straight to `BigDecimal.divide` at `DECIMAL128`,
+which costs ~500-700ns because its exact-remainder branch strips trailing zeros by repeated Knuth
+division. Every sort in the file is fast, and the mixed `Int64`/`Float64` `assertEqual` over 2000
+elements costs 0.22 ms. `NumberMath.divideExact` now settles terminating quotients in `Long`
+arithmetic instead — worth ~3× on `Int64 / Dec128` and `Dec128 / Dec128` as well; see
+`madr-better-nums.md` → "Notes".
 
 ### Replaying the numeric patch: where the conflicts are
 
