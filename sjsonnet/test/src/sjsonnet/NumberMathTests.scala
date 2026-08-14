@@ -236,6 +236,21 @@ object NumberMathTests extends TestSuite {
         renderExpr("std.setUnion([9007199254740993], [9007199254740994])") ==>
         "[9007199254740993, 9007199254740994]"
       }
+
+      test("a NaN Float64 sorts as greatest instead of crashing") {
+        // Float64's constructor only rejects Infinite, not NaN, so an embedder can hand in one
+        // directly (e.g. via ReadWriter[Double]). Every cross-representation branch of compareTo
+        // must treat it the way Util.compareDoubles does rather than promote it to BigDecimal,
+        // which throws on NaN.
+        val nan = Val.Float64(evalNum("0.0").pos, Double.NaN)
+        val i = evalNum("5") // Int64
+        val d = evalNum("5.0") // Dec128
+        assert(NumberMath.compareTo(i, nan) < 0)
+        assert(NumberMath.compareTo(nan, i) > 0)
+        assert(NumberMath.compareTo(d, nan) < 0)
+        assert(NumberMath.compareTo(nan, d) > 0)
+        assert(NumberMath.compareTo(nan, nan) == 0)
+      }
     }
 
     test("rendering") {
