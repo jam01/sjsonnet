@@ -129,7 +129,12 @@ object NumberMath {
 
   private def divide(a: Val.Num, b: Val.Num): Any = (a, b) match {
     case (Int64(_, x), Int64(_, y)) =>
-      if (x % y == 0) x / y // Keep as Long if divisible
+      if (x % y == 0)
+        // Keep as Long if divisible — except Long.MinValue / -1, the one quotient that overflows
+        // a Long despite dividing evenly (Math.divideExact needs Java 18+, so the one overflowing
+        // case is checked directly rather than caught from an ArithmeticException).
+        if (x == Long.MinValue && y == -1L) BigDecimal.decimal(x) / BigDecimal.decimal(y)
+        else x / y
       else {
         // Promote to BigDecimal for precision, cheaply where the quotient allows.
         val exact = terminatingQuotient(x, 0, y, 0)

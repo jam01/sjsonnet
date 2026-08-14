@@ -97,6 +97,9 @@ std.assertEqual(std.toString(2 / 7), "0.2857142857142857142857142857142857") &&
 std.assertEqual(std.toString(1 / 6), "0.1666666666666666666666666666666667") &&
 // A quotient that divides evenly stays an Int64 and never reaches any of the above.
 std.assertEqual(std.toString(100 / 4), "25") &&
+// Long.MinValue / -1 divides evenly too, but the Long quotient itself overflows — this must
+// widen to Dec128 rather than silently wrapping back to Long.MinValue.
+std.assertEqual(std.toString((-9223372036854775807 - 1) / -1), "9223372036854775808") &&
 // Exactness survives into the next operation.
 std.assertEqual(std.toString(1 / 2 * 2), "1") &&
 std.assertEqual(std.toString((1 / 4) + (1 / 4)), "0.5") &&
