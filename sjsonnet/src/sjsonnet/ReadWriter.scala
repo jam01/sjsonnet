@@ -1,5 +1,7 @@
 package sjsonnet
 
+import java.math.MathContext
+
 /**
  * Typeclasses for easy conversion between [[Val]]s and Scala data types
  */
@@ -42,7 +44,11 @@ object ReadWriter {
   }
   implicit object BigDecimalRead extends ReadWriter[BigDecimal] {
     def apply(t: Val): BigDecimal = t.asBigDecimal
-    def write(pos: Position, t: BigDecimal): sjsonnet.Val.Num = Val.Num(pos, t)
+    // Val.Dec128 requires MathContext.DECIMAL128; an embedder's BigDecimal can carry any
+    // MathContext (or none, from another library), so it is rounded here rather than passed
+    // through, the same way every other Dec128 construction site normalizes its input.
+    def write(pos: Position, t: BigDecimal): sjsonnet.Val.Num =
+      Val.Num(pos, BigDecimal.decimal(t.bigDecimal, MathContext.DECIMAL128))
   }
   implicit object NumRead extends ReadWriter[Val.Num] {
     def apply(t: Val): Val.Num = t.asNum

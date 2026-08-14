@@ -288,6 +288,19 @@ object NumberMathTests extends TestSuite {
         }
       }
     }
+
+    test("embedder BigDecimal") {
+      test("a non-DECIMAL128 MathContext is normalized, not rejected") {
+        // A BigDecimal built by wrapping a java.math.BigDecimal directly, bypassing Scala's
+        // normalizing BigDecimal.apply, is the shape an embedder value from another library
+        // commonly takes.
+        val jbd = new java.math.BigDecimal("3.14", MathContext.UNLIMITED)
+        val embedderValue = new scala.math.BigDecimal(jbd, MathContext.UNLIMITED)
+        val v = ReadWriter.BigDecimalRead.write(evalNum("0").pos, embedderValue)
+        assertKind(v, "dec128")
+        render(v) ==> "3.14"
+      }
+    }
   }
 
   private def interp: Interpreter = new Interpreter(
