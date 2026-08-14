@@ -1,0 +1,3 @@
+sjsonnet.ParseError: Expected finite number required:3:23, found "\n"
+    at [<root>].(error.huge_exponent_literal.jsonnet:3:23)
+

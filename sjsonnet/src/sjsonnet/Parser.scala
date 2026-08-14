@@ -197,7 +197,13 @@ class Parser(
         // everything else falls through to Val.Num's own Int64/Float64/Dec128 dispatch.
         val simple = parseSimpleUnsignedInteger(cleaned)
         if (simple >= 0) Pass(Val.Int64(s._1, simple))
-        else Pass(Val.Num(s._1, cleaned))
+        else
+          try Pass(Val.Num(s._1, cleaned))
+          catch {
+            // An exponent BigDecimal can't represent (absurdly many digits, as in `1e99999...`)
+            // reaches here as a raw NumberFormatException; surface it as a parse failure instead.
+            case _: NumberFormatException => Fail.opaque("finite number required")
+          }
       }
     }
   })
