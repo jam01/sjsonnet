@@ -553,12 +553,11 @@ class Evaluator(
         if (v.nameIdx == firstSlot) PureFirstDouble
         else if (v.nameIdx == secondSlot) PureSecondDouble
         else null
-      // NOTE: arithmetic (`x * 2`, `x / 3`, ...) is deliberately NOT compiled here any more.
-      // Raw `Double` arithmetic no longer reproduces what normal evaluation yields: the body's
-      // literals are Int64/Dec128 and NumberMath promotes, so `[x / 3 for x in std.range(...)]`
-      // would differ between the accelerated and the ordinary path. Re-targeting this pipeline to
-      // exact `Long` arithmetic (matching Int64) is a worthwhile perf follow-up; it needs its own
-      // overflow-fallback design, which does not belong in the correctness pass.
+      // Arithmetic expressions (`x * 2`, `x / 3`, ...) are not compiled here: the body's literals
+      // are Int64/Dec128 and NumberMath promotes, so raw `Double` arithmetic would not reproduce
+      // what normal evaluation yields for `[x / 3 for x in std.range(...)]`. Re-targeting this
+      // pipeline to exact `Long` arithmetic (matching Int64) is a worthwhile perf follow-up; it
+      // needs its own overflow-fallback design, which does not belong here.
       case _ => null
     }
 
