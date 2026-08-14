@@ -566,9 +566,10 @@ class StaticOptimizer(
       rhs: Val,
       fallback: Expr): Expr = {
     // NumberMath.compareTo is the same ordering the evaluator uses, including its IEEE 754
-    // -0.0 == 0.0 handling. NaN operands are left unfolded so runtime decides.
+    // -0.0 == 0.0 handling. No NaN case to special-case: Val.Float64 rejects NaN at construction,
+    // so every Val.Num literal reaching here is finite.
     (lhs, rhs) match {
-      case (l: Val.Num, r: Val.Num) if !l.rawDouble.isNaN && !r.rawDouble.isNaN =>
+      case (l: Val.Num, r: Val.Num) =>
         val cmp = NumberMath.compareTo(l, r)
         val result = (op: @switch) match {
           case BinaryOp.OP_<  => cmp < 0
@@ -606,7 +607,7 @@ class StaticOptimizer(
     val result = (lhs, rhs) match {
       case (_: Val.True, _: Val.True) | (_: Val.False, _: Val.False) | (_: Val.Null, _: Val.Null) =>
         true
-      case (l: Val.Num, r: Val.Num) if !l.rawDouble.isNaN && !r.rawDouble.isNaN =>
+      case (l: Val.Num, r: Val.Num) =>
         NumberMath.compareTo(l, r) == 0
       case (Val.Str(_, l), Val.Str(_, r)) =>
         l == r
