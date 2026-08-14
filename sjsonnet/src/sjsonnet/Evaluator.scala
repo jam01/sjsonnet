@@ -537,13 +537,18 @@ class Evaluator(
   /**
    * Compiles operands of a comparison body over a [[Val.RangeArr]] into raw doubles.
    *
-   * Safe for constants of any representation: range elements are integers, and `rawDouble` of a
-   * literal round-trips to a value with no integer strictly between it and the exact literal, so
-   * the ordering against an integral element is unchanged.
+   * A constant operand only takes this path when its `rawDouble` narrowing round-trips exactly back
+   * to the literal's own value (checked once here, via [[NumberMath.compareTo]], not per iteration)
+   * — otherwise the narrowing could flip a comparison's outcome against an integral range element,
+   * so this bails to the exact path instead.
    */
   private def compilePureDoubleExpr(e: Expr, firstSlot: Int, secondSlot: Int): PureDoubleExpr =
     e match {
-      case n: Val.Num => new PureConstDouble(n.rawDouble)
+      case n: Val.Num =>
+        val d = n.rawDouble
+        if (!d.isInfinite && NumberMath.compareTo(n, Val.Float64(n.pos, d)) == 0)
+          new PureConstDouble(d)
+        else null
       case v: ValidId =>
         if (v.nameIdx == firstSlot) PureFirstDouble
         else if (v.nameIdx == secondSlot) PureSecondDouble
