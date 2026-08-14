@@ -593,7 +593,9 @@ object RenderUtils {
   private def normalizeScientificString(s: String, eIdx: Int): String = {
     val rawMantissa = s.substring(0, eIdx)
     val exp = s.substring(eIdx + 1)
-    val expValue = Integer.parseInt(exp)
+    // A Dec128's exponent can exceed Int range (e.g. `1e2147483648`) even though the mantissa
+    // parses fine, so this stays in Long until formatFixedDecimal's window check narrows it.
+    val expValue = java.lang.Long.parseLong(exp)
     val fixed = formatFixedDecimal(rawMantissa, expValue)
     if (fixed != null) return fixed
 
@@ -604,7 +606,7 @@ object RenderUtils {
     mantissa + "e" + expSign + padExponent(expDigits)
   }
 
-  private def formatFixedDecimal(mantissa: String, exp: Int): String = {
+  private def formatFixedDecimal(mantissa: String, exp: Long): String = {
     val negative = mantissa.startsWith("-")
     val unsigned = if (negative) mantissa.substring(1) else mantissa
     val dotIdx = unsigned.indexOf('.')
@@ -618,14 +620,17 @@ object RenderUtils {
     // the platforms users compare against.
     if (decimalPoint <= -6 || decimalPoint > 21) return null
 
+    // Within the window above, decimalPoint fits an Int with room to spare.
+    val point = decimalPoint.toInt
+
     val digits =
       if (dotIdx >= 0) unsigned.substring(0, dotIdx) + unsigned.substring(dotIdx + 1)
       else unsigned
 
     val fixed =
-      if (decimalPoint <= 0) "0." + ("0" * -decimalPoint) + digits
-      else if (decimalPoint >= digits.length) digits + ("0" * (decimalPoint - digits.length))
-      else digits.substring(0, decimalPoint) + "." + digits.substring(decimalPoint)
+      if (point <= 0) "0." + ("0" * -point) + digits
+      else if (point >= digits.length) digits + ("0" * (point - digits.length))
+      else digits.substring(0, point) + "." + digits.substring(point)
 
     val trimmed = trimTrailingFractionZeros(fixed)
     if (negative) "-" + trimmed else trimmed

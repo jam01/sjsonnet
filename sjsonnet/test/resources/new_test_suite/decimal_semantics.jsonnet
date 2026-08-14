@@ -29,6 +29,9 @@ std.assertEqual(std.toString(1 / (1e-160) / (1e-160)), "1e+320") &&
 std.assertEqual(std.toString(1e309), "1e+309") &&
 // Small magnitudes too: go-jsonnet's binary64 artifact here is 9.9999999999999991e-31.
 std.assertEqual(std.toString(1 / 1e30), "1e-30") &&
+// An exponent past Int range still parses and renders: normalizeScientificString used to
+// narrow it through Integer.parseInt and crash.
+std.assertEqual(std.toString(1e2147483648), "1e+2147483648") &&
 
 // --- Integers are exact past 2^53 ------------------------------------------------------------
 std.assertEqual(std.toString(9007199254740993), "9007199254740993") &&
