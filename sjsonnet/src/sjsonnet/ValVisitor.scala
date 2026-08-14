@@ -40,8 +40,8 @@ class ValVisitor(pos: Position) extends JsonVisitor[Val, Val] { self =>
 
   def visitTrue(index: Int): Val = Val.True(pos)
 
-  // Val.Num.apply owns the whole routing decision, including the `-0` rule that used to be
-  // special-cased here (#926) and the overflow-safe widening for integers wider than a Long (#1019).
+  // Val.Num.apply owns the whole routing decision, including the `-0` rule and the widening of
+  // integers wider than a Long to Dec128 rather than crashing.
   def visitFloat64StringParts(s: CharSequence, decIndex: Int, expIndex: Int, index: Int): Val =
     Val.Num(pos, s.toString, decIndex, expIndex)
 
