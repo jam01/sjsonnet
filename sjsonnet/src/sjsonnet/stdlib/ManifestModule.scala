@@ -231,6 +231,10 @@ object ManifestModule extends AbstractFunctionModule {
           throw Error.fail("Invalid JSON: " + e.getMessage, pos)(ev)
         case _: ujson.IncompleteParseException =>
           throw Error.fail("Invalid JSON: unexpected end of JSON input", pos)(ev)
+        case _: NumberFormatException =>
+          // An exponent BigDecimal can't represent (absurdly many digits, as in `1e99999...`)
+          // reaches here as a raw NumberFormatException; surface it as a clean parse failure.
+          throw Error.fail("Invalid JSON: finite number required", pos)(ev)
       }
     }
   }

@@ -1,0 +1,2 @@
+sjsonnet.Error: [std.parseJson] Invalid JSON: finite number required
+    at [<root>].(error.parse_json_huge_exponent.jsonnet:3:14)
