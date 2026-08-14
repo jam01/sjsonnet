@@ -237,19 +237,17 @@ object NumberMathTests extends TestSuite {
         "[9007199254740993, 9007199254740994]"
       }
 
-      test("a NaN Float64 sorts as greatest instead of crashing") {
-        // Float64's constructor only rejects Infinite, not NaN, so an embedder can hand in one
-        // directly (e.g. via ReadWriter[Double]). Every cross-representation branch of compareTo
-        // must treat it the way Util.compareDoubles does rather than promote it to BigDecimal,
-        // which throws on NaN.
-        val nan = Val.Float64(evalNum("0.0").pos, Double.NaN)
-        val i = evalNum("5") // Int64
-        val d = evalNum("5.0") // Dec128
-        assert(NumberMath.compareTo(i, nan) < 0)
-        assert(NumberMath.compareTo(nan, i) > 0)
-        assert(NumberMath.compareTo(d, nan) < 0)
-        assert(NumberMath.compareTo(nan, d) > 0)
-        assert(NumberMath.compareTo(nan, nan) == 0)
+      test("Float64 rejects NaN at construction, same as Infinite") {
+        // An embedder handing in Double.NaN (e.g. via ReadWriter[Double]) must fail cleanly right
+        // there rather than producing a value that every downstream consumer — arithmetic,
+        // ordering, manifestation — would otherwise need to special-case.
+        val pos = evalNum("0.0").pos
+        try {
+          Val.Float64(pos, Double.NaN)
+          throw new Exception("expected construction to fail")
+        } catch {
+          case e: sjsonnet.Error => assert(e.getMessage == "Not a number")
+        }
       }
     }
 

@@ -512,12 +512,13 @@ object Val {
    * A Jsonnet number, in one of three representations:
    *
    *   - [[Int64]] — exact 64-bit integer.
-   *   - [[Float64]] — IEEE-754 double; fast but inexact. An explicit opt-out from exactness.
+   *   - [[Float64]] — IEEE-754 double; fast but inexact. An input/std-result representation only —
+   *     it never survives arithmetic, which promotes it to [[Dec128]].
    *   - [[Dec128]] — `BigDecimal` at `MathContext.DECIMAL128`; exact within 34 significant digits.
    *     This is the default for non-integer literals.
    *
-   * See `madr-better-nums.md` for the rationale. All arithmetic across representations lives in
-   * [[NumberMath]], including the all-[[Float64]] case — see `NumberMath.promoteFloat64Arithmetic`.
+   * See `madr-better-nums.md` for the rationale. All arithmetic across representations, including
+   * promotion of [[Float64]] operands, lives in [[NumberMath]].
    */
   sealed abstract class Num extends Literal {
     def prettyName = "number"
@@ -651,10 +652,17 @@ object Val {
     override def isZero: Boolean = num == 0
   }
 
-  /** IEEE-754 double: the fast, inexact representation. */
+  /**
+   * IEEE-754 double: the fast, inexact representation. Rejects `Infinite` and `NaN` at construction
+   * — every representation this type can hold is a finite, comparable number, so arithmetic,
+   * ordering, and manifestation never need to special-case a non-finite payload.
+   */
   final case class Float64(var pos: Position, num: Double) extends Num {
     if (num.isInfinite) {
       Error.fail("Overflow")
+    }
+    if (num.isNaN) {
+      Error.fail("Not a number")
     }
 
     override def asInt: Int = num.toInt

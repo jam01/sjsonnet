@@ -342,10 +342,10 @@ object NumberMath {
    * Total ordering across all three representations.
    *
    * The all-[[Val.Float64]] case delegates to [[Util.compareDoubles]] so that IEEE-754 `-0.0`/`0.0`
-   * equality (and NaN ordering) stays consistent with the rest of the evaluator rather than being
-   * hand-rolled here. A `Float64` operand can carry `NaN` — the constructor only rejects `Infinite`
-   * — so every cross-representation branch mixing in a `Float64` sorts it as greatest, matching
-   * `Util.compareDoubles`, instead of promoting it to `BigDecimal.decimal`, which throws on `NaN`.
+   * equality stays consistent with the rest of the evaluator rather than being hand-rolled here. No
+   * branch needs to special-case `NaN`: [[Val.Float64]]'s constructor rejects it the same way it
+   * rejects `Infinite`, so every operand reaching here is finite and safe to promote to
+   * `BigDecimal.decimal`.
    */
   def compareTo(a: Val.Num, b: Val.Num): Int = (a, b) match {
     case (Int64(_, x), Int64(_, y))   => java.lang.Long.compare(x, y)
@@ -354,10 +354,10 @@ object NumberMath {
 
     case (Float64(_, x), Int64(_, y))   => -compareLongToDouble(y, x)
     case (Float64(_, x), Float64(_, y)) => Util.compareDoubles(x, y)
-    case (Float64(_, x), Dec128(_, y))  => if (x.isNaN) 1 else BigDecimal.decimal(x).compare(y)
+    case (Float64(_, x), Dec128(_, y))  => BigDecimal.decimal(x).compare(y)
 
     case (Dec128(_, x), Int64(_, y))   => x.compare(BigDecimal.decimal(y))
-    case (Dec128(_, x), Float64(_, y)) => if (y.isNaN) -1 else x.compare(BigDecimal.decimal(y))
+    case (Dec128(_, x), Float64(_, y)) => x.compare(BigDecimal.decimal(y))
     case (Dec128(_, x), Dec128(_, y))  => x.compare(y)
   }
 
@@ -376,16 +376,11 @@ object NumberMath {
    * `-0.0` keeps comparing equal to `0`.
    *
    * Nothing here allocates: `l` is a primitive local and `Long.compare` is a static intrinsic.
-   *
-   * `y.isNaN` is checked first since `BigDecimal.decimal(Double.NaN)` throws rather than compares.
    */
   @inline private def compareLongToDouble(x: Long, y: Double): Int = {
-    if (y.isNaN) -1
-    else {
-      val l = y.toLong
-      if (RenderUtils.isExactLongDouble(y, l)) java.lang.Long.compare(x, l)
-      else BigDecimal.decimal(x).compare(BigDecimal.decimal(y))
-    }
+    val l = y.toLong
+    if (RenderUtils.isExactLongDouble(y, l)) java.lang.Long.compare(x, l)
+    else BigDecimal.decimal(x).compare(BigDecimal.decimal(y))
   }
 
   /** The IEEE-754 sign of an operand, `-0.0` included. */
