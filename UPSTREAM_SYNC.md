@@ -230,6 +230,7 @@ The rationale for the numeric entries lives in `madr-better-nums.md`; this is th
 | `Interpreter.interpret` | Returns `ujson.Value`, whose numbers are `Double` — so the convenience overload **narrows**, yielding `Infinity` for out-of-range values and rounding past 2^53 | Not fixable without changing ujson. Use `interpret0(txt, path, visitor)` with a Dec128-aware visitor; that is what xtrasonnet does. |
 | Test harness | 10 goldens skip-listed in `FileTests.scala` because `ujson.Value` cannot express their result | Their goldens are left at upstream's text so a sync drops in clean. Coverage moved to `new_test_suite/decimal_semantics.jsonnet`, which asserts on rendered strings. |
 | Scala Native 2.13 | `-0` produced by arithmetic renders `0`; 2 unit tests + 9 goldens fail on that target only | Toolchain quirk in `NumberMath.signZero`'s `-0.0` literal. Not fixed: the fork targets xtrasonnet (JVM). `Math.copySign(0.0, -1.0)` is the fix if ever needed. |
+| `Val.Float64` construction | Rejects `NaN`, not just `Infinite` — upstream's equivalent checks `Infinite` at construction and `NaN` lazily, if at all | `madr-better-nums.md` → "Reversed after initial rejection". Closes accidental/inconsistent NaN handling across arithmetic (leaked parser message), unary minus (silent pass-through), and manifestation (invalid JSON). |
 | Performance | Upstream's raw-`Double` arithmetic fast paths were removed; all arithmetic routes through `NumberMath`. Measured at ~1.0–1.25× of upstream on the regression suite — see below | Exactness is the product, not a mode: there is no opt-out, and no way to get upstream's numerics from this fork. Measured median 0.98x of upstream over 14 suite cases, worst 1.22x, so there is little to opt out of. A `Float64` operand promotes like any other, so it never survives an operation. |
 
 ### Measured performance
@@ -274,13 +275,14 @@ how much trouble each file gives on replay:
 | File | What to expect |
 |---|---|
 | `Evaluator.scala` | Worst. Upstream keeps adding raw-`Double` fast paths; ours routes arithmetic through `NumberMath` and deleted the comprehension arithmetic pipeline. Any new upstream fast path needs the same treatment: comparisons and bitwise/shift may stay raw, arithmetic may not. |
-| `Val.scala` | The `Int64`/`Float64`/`Dec128` split plus two 256-entry pools. Upstream's `cachedNum` call sites are the hazard — a new one on an integral value silently costs `BigDecimal` promotion later. |
+| `Val.scala` | The `Int64`/`Float64`/`Dec128` split plus two 256-entry pools. Upstream's `cachedNum` call sites are the hazard — a new one on an integral value silently costs `BigDecimal` promotion later. `Float64`'s constructor also rejects `NaN`, not just `Infinite` — see `madr-better-nums.md` → "Reversed after initial rejection"; keep both checks together if upstream's own constructor gains new validation. |
 | `StaticOptimizer.scala` | The constant folder must fold through `NumberMath`'s `try*` variants, or a folded chain disagrees with the evaluator. |
 | `Parser.scala` | Number-literal grammar. Underscore stripping must happen *before* `Val.Num` sees the text, or `decIndex`/`expIndex` are wrong. |
 | `Materializer.scala` | Six numeric dispatch sites, plus `RangeArr`/`ByteArr` compact paths that write raw `Double` deliberately. |
 | `Renderer.scala` + the four renderers | `renderNum`/`renderDec128`/`truncatedNumDigits`. Mostly additive. |
-| `SetModule` / `StringModule` / `TypeModule` | The only `std` files we diverge in, and only where the floor requires it. |
+| `SetModule` / `StringModule` / `TypeModule` | `std` files we diverge in only where the floor requires it. |
 | `MathModule` | `max`/`min`/`abs`/`floor`/`ceil`/`round`/`clamp` carry pass-through guards so they cannot answer with a number that was never an input. Everything else in the file is upstream's, deliberately — `std` is inexact by design and `xtr` is the exact path. Guards read as bug fixes, so they usually survive an upstream rework intact. |
+| `ManifestModule.scala` / `ValVisitor.scala` | `std.parseJson` catches the same exponent-overflow `NumberFormatException` `Parser.scala` already guards against, converting it to a clean error instead of an uncaught crash. Small, unlikely to conflict, but confirm the catch survives if upstream restructures `ParseJson`'s error handling. |
 | `Format.scala` | `%s` and the integer conversions. Upstream churns this file heavily. |
 | `ByteRenderer.scala` | Has its own fused `materializeDirect` that bypasses the visitor entirely — easy to miss, and it is the CLI's default path. |
 
@@ -290,7 +292,10 @@ how much trouble each file gives on replay:
 
 - **`std.parseYaml` narrows on ingest** (builds a `ujson.Value` first) and on the JVM throws
   `NumberFormatException` for `'a: 9223372036854775808'`. Fixing it means rewriting YAML ingest
-  across all three `Platform.scala` files — a rewrite, not a patch. Accepted as-is.
+  across all three `Platform.scala` files — a rewrite, not a patch. Accepted as-is. This is a
+  different `NumberFormatException` than the one `ManifestModule.ParseJson` guards against (see the
+  per-file guide below) — a `Long` overflow in YAML's `Tag.INT` ingest, not a `BigDecimal` exponent
+  overflow — and is still open.
 - **`std.manifestIni` / `std.manifestPythonVars`** round-trip through `Materializer`'s
   `ujson.Value`, so integers past 2^53 surface as *quoted strings* and `1e400` as `Infinity`,
   unlike their exact siblings `manifestJson`/`manifestToml`/`manifestYamlDoc`/`manifestXmlJsonml`.

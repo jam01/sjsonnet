@@ -22,7 +22,9 @@ Scala 3.3.7 uses `DECIMAL128` as the default `BigDecimal` math context, which pr
 We introduce a richer numeric model with three explicit numeric representations:
 
 * **Int64** — exact 64-bit integers
-* **Float64** — IEEE double (fast, inexact)
+* **Float64** — IEEE double (fast, inexact); rejects `Infinite` and `NaN` at construction, so every
+  representation in the model is a finite, comparable number — see "Reversed after initial
+  rejection" below
 * **Dec128** — `BigDecimal` with `DECIMAL128` precision (exact within 34 digits)
 
 Default behavior — and the only behavior:
@@ -204,14 +206,12 @@ Recorded so they are not attempted again. Each looked reasonable and is wrong.
    during the split. It would have silently routed `Int64 op Int64` through `Double` at ~32 sites
    including the constant folder, where a wrong-but-plausible fold looks like success. The compile
    errors were the worklist.
-5. **`Val.Float64` rejecting NaN at construction.** Upstream rejects only infinity there and NaN
-   lazily in `asDouble`; moving the check earlier changes both the message and its position.
-6. **Assuming mixed-representation comparison dominated `cpp_suite/bench.06`.** A `Long` fast path
+5. **Assuming mixed-representation comparison dominated `cpp_suite/bench.06`.** A `Long` fast path
    for `Int64`↔whole-`Float64` comparison was added and measured: no effect. The fast path was kept
    on its own merits (allocation-free, provably equivalent). The benchmark's actual cost was
    `BigDecimal./` — nothing to do with comparison, sorting, or representation. See
    `UPSTREAM_SYNC.md` → "Measured performance".
-7. **Reinstating a `Float64` representation flag to save memory.** The strongest remaining argument
+6. **Reinstating a `Float64` representation flag to save memory.** The strongest remaining argument
    for the deleted flag, and the one not about speed: a document with many decimals and no
    arithmetic pays `Dec128`'s footprint for nothing. The cost is real and measured — importing 900k
    decimals (16.7 MB of JSON) needs **197 MB** of heap against **142 MB** when the same numbers are
@@ -232,6 +232,24 @@ Recorded so they are not attempted again. Each looked reasonable and is wrong.
    and Native, so the mitigation is portable even though the numbers above are **JVM-only**: object
    layout on Scala.js and Native differs enough that the +39% figure should not be quoted for them
    without re-measuring. The direction holds on all three; the magnitude is unverified off the JVM.
+
+### Reversed after initial rejection
+
+1. **`Val.Float64` rejecting `NaN` at construction.** Originally rejected during implementation,
+   because upstream rejects only `Infinite` there and checks `NaN` lazily in `asDouble`, so moving
+   the check earlier changes both the message and its position relative to upstream.
+
+   Adopted anyway once leaving it out was shown to cost more than that divergence: an embedder-
+   supplied NaN (e.g. via `ReadWriter[Double]`; no pure-Jsonnet expression can produce one) reached
+   every consumer differently, and none of them well. Binary arithmetic (`+ - * /`) happened to
+   error, but only by accident — promoting to `BigDecimal.decimal` throws a raw
+   `NumberFormatException` that leaks an internal parser message ("Character N is neither a decimal
+   digit..."). Unary minus doesn't promote, so it silently returned NaN with no error at all. An
+   unrejected NaN then materialized as invalid JSON: a bare, unquoted `NaN` token from `Renderer`, or
+   a bogus quoted `"NaN"` string from the CLI's `ujson`-based writer. Rejecting at construction — the
+   same choke point `Infinite` already used — closes all three at once, and let
+   `NumberMath.compareTo`'s per-representation NaN branches (added to tolerate exactly this case)
+   come back out again, since every operand reaching `compareTo` is now guaranteed finite.
 
 ## Notes
 
